@@ -58,6 +58,13 @@ graph TD
 
 ## ✨ 2. Tính năng nổi bật
 
+### ⏰ Đồng hồ & Thời tiết khi nghỉ (Màn hình chờ sau 5s Idle)
+* Khi không có người trò chuyện hoặc thao tác trong vòng **5 giây**, màn hình sẽ tự động kích hoạt chế độ **Màn hình chờ Đồng hồ & Thời tiết**:
+  * Hiển thị giờ điện tử rõ nét (Giờ:Phút) đồng bộ chuẩn xác từ máy chủ thời gian internet (SNTP / Chronos BLE).
+  * Cập nhật thông tin thời tiết địa phương theo thời gian thực (nhiệt độ, độ ẩm, mây/nắng).
+  * Hỗ trợ tùy biến và chuyển đổi các mẫu thiết kế màn chờ (Idle Presets) qua thẻ nhớ SD hoặc bộ nhớ mặc định.
+  * Ngay khi người dùng cất giọng nói hoặc bấm nút Boot, thiết bị lập tức thoát màn chờ để hiện đôi mắt cảm xúc và phụ đề trò chuyện máy đánh chữ.
+
 ### 🎶 Trình phát nhạc Đĩa Than Vinyl 360°
 * Khi nghe nhạc trực tuyến (SoundCloud / OCS), giao diện màn hình tự động chuyển sang chiếc đĩa than Vinyl cổ điển đường kính 136px.
 * Hoạt ảnh xoay tròn 360° vô hạn với hiệu ứng rãnh đĩa phản quang và tâm đĩa đỏ cam bắt mắt.
