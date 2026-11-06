@@ -84,29 +84,22 @@ public:
             "  • action (string, bắt buộc): 'turn_on', 'turn_off', 'toggle', 'get_state'.\n"
             "  • duration_ms (integer, milliseconds): thời gian bật tự tắt (xung). 0 là giữ nguyên.";
 
-        PropertyList properties;
-        properties["relay"] = Property(PropertyType::kInteger, "Relay number (3, 14, 15, 16)", true);
-        properties["device"] = Property(PropertyType::kString, "Device name label", false);
-        properties["action"] = Property(PropertyType::kString, "Action: turn_on, turn_off, toggle, get_state", true);
-        properties["duration_ms"] = Property(PropertyType::kInteger, "Duration in milliseconds for pulse auto-off (0 for latch)", false);
+        PropertyList properties({
+            Property("relay", kPropertyTypeInteger, 1),
+            Property("action", kPropertyTypeString, std::string("toggle")),
+            Property("device", kPropertyTypeString, std::string("")),
+            Property("duration_ms", kPropertyTypeInteger, 0)
+        });
 
         mcp_server.AddTool("self.relay.control", description, properties, [this](const PropertyList& props) -> ReturnValue {
-            int relay_num = 0;
-            std::string action;
+            int relay_num = 1;
+            try { relay_num = props["relay"].value<int>(); } catch (...) {}
+            std::string action = "toggle";
+            try { action = props["action"].value<std::string>(); } catch (...) {}
             std::string device;
+            try { device = props["device"].value<std::string>(); } catch (...) {}
             int duration_ms = 0;
-
-            auto it_r = props.find("relay");
-            if (it_r != props.end()) relay_num = it_r->second.value<int>();
-
-            auto it_a = props.find("action");
-            if (it_a != props.end()) action = it_a->second.value<std::string>();
-
-            auto it_d = props.find("device");
-            if (it_d != props.end()) device = it_d->second.value<std::string>();
-
-            auto it_dur = props.find("duration_ms");
-            if (it_dur != props.end()) duration_ms = it_dur->second.value<int>();
+            try { duration_ms = props["duration_ms"].value<int>(); } catch (...) {}
 
             auto it = relays_.find(relay_num);
             if (it == relays_.end()) {

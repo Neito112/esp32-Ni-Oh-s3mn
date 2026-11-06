@@ -8,6 +8,7 @@ set(SOURCES "audio/audio_codec.cc"
             "display/display.cc"
             "display/text_glyph.cc"
             "display/lcd_display.cc"
+            "display/oled_display.cc"
             "display/lvgl_display/lvgl_display.cc"
             "display/lvgl_display/emoji_collection.cc"
             "display/lvgl_display/lvgl_theme.cc"
@@ -1073,6 +1074,7 @@ idf_component_register(SRCS ${SOURCES}
                         esp_netif
                         esp_wifi
                         esp_http_server
+                        esp_http_client
                         esp_eth
                         esp_driver_gpio
                         esp_driver_uart

@@ -63,8 +63,8 @@ static const struct ble_gatt_svc_def g_chronos_gatt_svcs[] = {
                 // TX: ESP32 notifies Phone here
                 .uuid = &CHRONOS_CHR_TX_UUID.u,
                 .access_cb = ChronosGattAccess,
-                .val_handle = &g_tx_val_handle,
                 .flags = BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &g_tx_val_handle,
             },
             { 0 }
         },

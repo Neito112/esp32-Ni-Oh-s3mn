@@ -48,6 +48,11 @@ public:
 
     void InitEspNow() {
         if (esp_now_initialized_) return;
+        wifi_mode_t mode;
+        if (esp_wifi_get_mode(&mode) != ESP_OK) {
+            ESP_LOGW(TAG_IOT, "WiFi not started yet, skipping ESP-NOW init");
+            return;
+        }
         esp_err_t ret = esp_now_init();
         if (ret == ESP_OK) {
             esp_now_initialized_ = true;
@@ -63,7 +68,6 @@ public:
     }
 
     void RegisterTools() {
-        InitEspNow();
         LoadComputersFromNvs();
         auto& mcp_server = McpServer::GetInstance();
 
@@ -108,37 +112,26 @@ public:
         // =====================================================================
         const char* desc_remember = 
             "Ghi nhớ máy tính vào bộ nhớ vĩnh viễn NVS của chip (không mất khi mất điện).\n"
-            "Dùng khi người dùng chỉ định: 'Nhớ máy này là máy của tôi', 'Gán máy HP kia là laptop công ty', v.v.\n"
-            "Tham số:\n"
-            "  • id (string, bắt buộc): Mã nhận diện logic ('my_pc', 'laptop_cty', 'pc_ban', 'gaming').\n"
-            "  • label (string, tuỳ chọn): Tên gọi thân thiện (ví dụ 'Máy của tôi', 'Laptop làm việc').\n"
-            "  • mac (string, tuỳ chọn): Địa chỉ MAC card mạng (nếu có).\n"
-            "  • ip (string, tuỳ chọn): Địa chỉ IP trong mạng LAN.\n"
-            "  • hostname (string, tuỳ chọn): Tên máy tính Windows.";
+            "Dùng khi người dùng chỉ định: 'Nhớ máy này là máy của tôi', 'Gán máy HP kia là laptop công ty', v.v.";
 
-        PropertyList props_remember;
-        props_remember["id"] = Property(PropertyType::kString, "Mã máy tính (my_pc, laptop_cty, pc_ban)", true);
-        props_remember["label"] = Property(PropertyType::kString, "Tên hiển thị thân thiện", false);
-        props_remember["mac"] = Property(PropertyType::kString, "Địa chỉ MAC", false);
-        props_remember["ip"] = Property(PropertyType::kString, "Địa chỉ IP", false);
-        props_remember["hostname"] = Property(PropertyType::kString, "Tên Windows NetBIOS", false);
+        PropertyList props_remember({
+            Property("id", kPropertyTypeString, std::string("my_pc")),
+            Property("label", kPropertyTypeString, std::string("")),
+            Property("mac", kPropertyTypeString, std::string("")),
+            Property("ip", kPropertyTypeString, std::string("")),
+            Property("hostname", kPropertyTypeString, std::string(""))
+        });
 
         mcp_server.AddTool("self.lan.remember_computer", desc_remember, props_remember, [this](const PropertyList& props) -> ReturnValue {
             ComputerProfile cp;
             cp.id = "my_pc";
+            try { cp.id = props["id"].value<std::string>(); } catch (...) {}
             cp.label = "Máy tính của tôi";
+            try { cp.label = props["label"].value<std::string>(); } catch (...) {}
+            try { cp.mac = props["mac"].value<std::string>(); } catch (...) {}
+            try { cp.ip = props["ip"].value<std::string>(); } catch (...) {}
+            try { cp.hostname = props["hostname"].value<std::string>(); } catch (...) {}
             cp.port = 7760;
-
-            auto it_id = props.find("id");
-            if (it_id != props.end()) cp.id = it_id->second.value<std::string>();
-            auto it_l = props.find("label");
-            if (it_l != props.end()) cp.label = it_l->second.value<std::string>();
-            auto it_m = props.find("mac");
-            if (it_m != props.end()) cp.mac = it_m->second.value<std::string>();
-            auto it_i = props.find("ip");
-            if (it_i != props.end()) cp.ip = it_i->second.value<std::string>();
-            auto it_h = props.find("hostname");
-            if (it_h != props.end()) cp.hostname = it_h->second.value<std::string>();
 
             // Tự động nhận diện vendor nếu có MAC
             if (!cp.mac.empty()) {
@@ -165,13 +158,13 @@ public:
         // CÔNG CỤ 3: QUÊN / XÓA MÁY TÍNH KHỎI BỘ NHỚ NVS
         // =====================================================================
         const char* desc_forget = "Xóa thông tin một máy tính khỏi bộ nhớ vĩnh viễn NVS.";
-        PropertyList props_forget;
-        props_forget["id"] = Property(PropertyType::kString, "Mã máy tính cần xóa", true);
+        PropertyList props_forget({
+            Property("id", kPropertyTypeString, std::string("my_pc"))
+        });
 
         mcp_server.AddTool("self.lan.forget_computer", desc_forget, props_forget, [this](const PropertyList& props) -> ReturnValue {
             std::string id = "my_pc";
-            auto it = props.find("id");
-            if (it != props.end()) id = it->second.value<std::string>();
+            try { id = props["id"].value<std::string>(); } catch (...) {}
 
             bool ok = RemoveComputerFromNvs(id);
             cJSON* root = cJSON_CreateObject();
@@ -221,18 +214,16 @@ public:
         const char* desc_wol = 
             "Bật nguồn Máy tính để bàn (PC), Laptop hoặc Server trong mạng LAN bằng Wake-on-LAN.\n"
             "Tự động tìm kiếm đúng máy theo ID ('my_pc', 'laptop', 'gaming', 'pc_cty') hoặc theo MAC cụ thể.";
-        PropertyList props_wol;
-        props_wol["device"] = Property(PropertyType::kString, "Mã máy tính (ví dụ 'my_pc', 'laptop', 'gaming')", false);
-        props_wol["mac"] = Property(PropertyType::kString, "Địa chỉ MAC card mạng (nếu đọc trực tiếp)", false);
+        PropertyList props_wol({
+            Property("device", kPropertyTypeString, std::string("my_pc")),
+            Property("mac", kPropertyTypeString, std::string(""))
+        });
 
         mcp_server.AddTool("self.lan.wake_on_lan", desc_wol, props_wol, [this](const PropertyList& props) -> ReturnValue {
             std::string target = "my_pc";
+            try { target = props["device"].value<std::string>(); } catch (...) {}
             std::string mac_str;
-
-            auto it_d = props.find("device");
-            if (it_d != props.end()) target = it_d->second.value<std::string>();
-            auto it_m = props.find("mac");
-            if (it_m != props.end()) mac_str = it_m->second.value<std::string>();
+            try { mac_str = props["mac"].value<std::string>(); } catch (...) {}
 
             std::string display_name = target;
             if (mac_str.empty()) {
@@ -266,23 +257,20 @@ public:
             "  • action (string, bắt buộc): 'shutdown', 'sleep', 'lock', 'mute'.\n"
             "  • device (string, tuỳ chọn): Mã máy tính ('my_pc', 'laptop'...). Mặc định là 'my_pc'.\n"
             "  • ip (string, tuỳ chọn): Địa chỉ IP trực tiếp.";
-        PropertyList props_pc_ctrl;
-        props_pc_ctrl["action"] = Property(PropertyType::kString, "Lệnh: shutdown, sleep, lock, mute", true);
-        props_pc_ctrl["device"] = Property(PropertyType::kString, "Mã máy tính ('my_pc', 'laptop')", false);
-        props_pc_ctrl["ip"] = Property(PropertyType::kString, "Địa chỉ IP", false);
+        PropertyList props_pc_ctrl({
+            Property("action", kPropertyTypeString, std::string("sleep")),
+            Property("device", kPropertyTypeString, std::string("my_pc")),
+            Property("ip", kPropertyTypeString, std::string(""))
+        });
 
         mcp_server.AddTool("self.lan.control_pc", desc_pc_ctrl, props_pc_ctrl, [this](const PropertyList& props) -> ReturnValue {
             std::string action = "sleep";
+            try { action = props["action"].value<std::string>(); } catch (...) {}
             std::string target = "my_pc";
+            try { target = props["device"].value<std::string>(); } catch (...) {}
             std::string ip_str;
+            try { ip_str = props["ip"].value<std::string>(); } catch (...) {}
             int port = 7760;
-
-            auto it_a = props.find("action");
-            if (it_a != props.end()) action = it_a->second.value<std::string>();
-            auto it_d = props.find("device");
-            if (it_d != props.end()) target = it_d->second.value<std::string>();
-            auto it_i = props.find("ip");
-            if (it_i != props.end()) ip_str = it_i->second.value<std::string>();
 
             std::string display_name = target;
             if (ip_str.empty()) {
@@ -312,22 +300,19 @@ public:
         // CÔNG CỤ 7: SÓNG ESP-NOW ĐIỀU KHIỂN CÁC MẠCH ESP32 KHÁC
         // =====================================================================
         const char* desc_espnow = "Điều khiển trực tiếp mạch ESP32 khác trong phòng qua sóng ESP-NOW (không cần router Wi-Fi).";
-        PropertyList props_espnow;
-        props_espnow["action"] = Property(PropertyType::kString, "Lệnh: turn_on, turn_off, toggle, custom", true);
-        props_espnow["mac"] = Property(PropertyType::kString, "MAC ESP32 nhận (để trống để gửi broadcast)", false);
-        props_espnow["command"] = Property(PropertyType::kString, "Nội dung lệnh chi tiết", false);
+        PropertyList props_espnow({
+            Property("action", kPropertyTypeString, std::string("toggle")),
+            Property("mac", kPropertyTypeString, std::string("broadcast")),
+            Property("command", kPropertyTypeString, std::string(""))
+        });
 
         mcp_server.AddTool("self.esp_now.control", desc_espnow, props_espnow, [this](const PropertyList& props) -> ReturnValue {
             std::string action = "toggle";
+            try { action = props["action"].value<std::string>(); } catch (...) {}
             std::string mac = "broadcast";
+            try { mac = props["mac"].value<std::string>(); } catch (...) {}
             std::string cmd;
-
-            auto it_a = props.find("action");
-            if (it_a != props.end()) action = it_a->second.value<std::string>();
-            auto it_m = props.find("mac");
-            if (it_m != props.end()) mac = it_m->second.value<std::string>();
-            auto it_c = props.find("command");
-            if (it_c != props.end()) cmd = it_c->second.value<std::string>();
+            try { cmd = props["command"].value<std::string>(); } catch (...) {}
 
             bool ok = SendEspNow(mac, action, cmd);
             cJSON* root = cJSON_CreateObject();
@@ -371,17 +356,16 @@ public:
         });
 
         const char* desc_ble_ctrl = "Gửi lệnh bật/tắt tới thiết bị BLE theo địa chỉ MAC.";
-        PropertyList props_ble_ctrl;
-        props_ble_ctrl["mac"] = Property(PropertyType::kString, "Địa chỉ MAC của thiết bị BLE", true);
-        props_ble_ctrl["action"] = Property(PropertyType::kString, "Lệnh: turn_on, turn_off, toggle", true);
+        PropertyList props_ble_ctrl({
+            Property("mac", kPropertyTypeString, std::string("")),
+            Property("action", kPropertyTypeString, std::string("toggle"))
+        });
 
         mcp_server.AddTool("self.ble.control", desc_ble_ctrl, props_ble_ctrl, [this](const PropertyList& props) -> ReturnValue {
             std::string mac;
+            try { mac = props["mac"].value<std::string>(); } catch (...) {}
             std::string action = "toggle";
-            auto it_m = props.find("mac");
-            if (it_m != props.end()) mac = it_m->second.value<std::string>();
-            auto it_a = props.find("action");
-            if (it_a != props.end()) action = it_a->second.value<std::string>();
+            try { action = props["action"].value<std::string>(); } catch (...) {}
 
             bool ok = ControlBleDevice(mac, action);
             cJSON* root = cJSON_CreateObject();

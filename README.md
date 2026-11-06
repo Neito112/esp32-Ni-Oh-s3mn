@@ -4,53 +4,51 @@ Firmware AI Robot để bàn thông minh chạy trên chip **ESP32-S3FH4R2** (4M
 
 ---
 
-## 📌 1. Sơ đồ Chân Phần Cứng (Hardware Pinout)
+## 📌 1. Sơ đồ Chân Phần Cứng Cố Định (Hardware Pinout - Chuẩn ESP32-S3 SuperMini)
 
-Cấu hình chân cố định chuẩn cho board mạch thực tế:
+Cấu hình chân đã được cài đặt cố định trong firmware, nạp xong dùng được ngay không cần cấu hình chân:
 
 | Khối Chức Năng | Tên Chân Linh Kiện | Chân GPIO ESP32-S3 | Ghi chú kết nối |
 | :--- | :--- | :--- | :--- |
-| **Màn hình ST7789 (240x240)** | **SDA (MOSI)** | `GPIO 13` | SPI Data |
-| | **SCL (SCLK)** | `GPIO 2` | SPI Clock |
-| | **CS** | `GPIO 7` | Chip Select |
-| | **DC** | `GPIO 6` | Data / Command |
-| | **RST** | `GPIO 5` | Reset |
+| **Màn hình ST7789 (240x240)** | **SCL (SCLK)** | `GPIO 12` | SPI Clock |
+| | **SDA (MOSI)** | `GPIO 11` | SPI Data |
+| | **RES (RST)** | `GPIO 10` | Reset |
+| | **DC** | `GPIO 9` | Data / Command |
+| | **CS** | `GPIO 8` | Chip Select |
 | | **BLK (Backlight)** | `3V3 / NC` | Nối trực tiếp nguồn 3.3V |
 | **Microphone INMP441 (I2S)** | **WS (LRCK)** | `GPIO 4` | Word Select |
 | | **SCK (BCLK)** | `GPIO 5` | Bit Clock |
 | | **SD (DIN)** | `GPIO 6` | Data In |
-| **Bộ khuếch đại MAX98357A** | **DIN (DOUT)** | `GPIO 7` | Data Out |
-| | **BCLK** | `GPIO 15` | Bit Clock |
-| | **LRC (LRCK)** | `GPIO 16` | Word Select / Left-Right |
-| **Thẻ nhớ MicroSD (SPI)** | **MISO** | `GPIO 17` | SPI Data Out |
-| | **MOSI** | `GPIO 18` | SPI Data In |
-| | **CLK** | `GPIO 21` | SPI Clock |
-| | **CS** | `GPIO 10` | Chip Select |
-| **4 Kênh Rơ-le (Relays)** | **Relay 1** | `GPIO 3` | Điều khiển thiết bị 1 |
-| | **Relay 2** | `GPIO 14` | Điều khiển thiết bị 2 |
-| | **Relay 3** | `GPIO 15` | Điều khiển thiết bị 3 |
-| | **Relay 4** | `GPIO 16` | Điều khiển thiết bị 4 |
-| **Nút bấm & Báo hiệu** | **Nút Boot / Trò chuyện**| `GPIO 0` | Nhấn để trò chuyện / Cấu hình Wi-Fi |
-| | **LED Tích hợp** | `GPIO 21` | Đèn trạng thái |
+| | **L/R** | `GND` | Kênh Trái |
+| **Bộ khuếch đại MAX98357A** | **LRC (LRCK)** | `GPIO 1` | Word Select / Left-Right |
+| | **BCLK** | `GPIO 2` | Bit Clock |
+| | **DIN (DOUT)** | `GPIO 3` | Data Out từ ESP32 |
+| | **GAIN / SD** | `GND / NC` | Mặc định |
+| **Nút bấm & Báo hiệu** | **Nút Boot / Trò chuyện**| `GPIO 0` | Nhấn để trò chuyện / Cấu hình Wi-Fi (nút có sẵn trên mạch) |
+| | **LED Tích hợp** | `GPIO 48` | Đèn trạng thái (LED có sẵn trên ESP32-S3 SuperMini) |
+| **4 Kênh Rơ-le (Tùy chọn)** | **Relay 1** | `GPIO 7` | Điều khiển thiết bị 1 |
+| | **Relay 2** | `GPIO 13` | Điều khiển thiết bị 2 |
+| | **Relay 3** | `GPIO 14` | Điều khiển thiết bị 3 |
+| | **Relay 4** | `GPIO 21` | Điều khiển thiết bị 4 |
 
 ```mermaid
 graph TD
     ESP["ESP32-S3FH4R2 (4MB Flash + 2MB PSRAM)"]
     
-    subgraph Audio [Âm Thanh I2S]
-        MIC["Mic INMP441 (WS: 4, SCK: 5, DIN: 6)"] --> ESP
-        ESP --> AMP["Amp MAX98357A (DOUT: 7, BCLK: 15, LRCK: 16)"]
+    subgraph Audio [Âm Thanh I2S Tách Biệt]
+        MIC["Mic INMP441 (WS: 4, SCK: 5, SD: 6)"] --> ESP
+        ESP --> AMP["Amp MAX98357A (LRC: 1, BCLK: 2, DIN: 3)"]
     end
     
-    subgraph Display [Hiển Thị ST7789]
-        ESP --> LCD["ST7789 240x240 (SDA: 13, SCL: 2, CS: 7, DC: 6, RST: 5)"]
+    subgraph Display [Hiển Thị ST7789 SPI Tách Biệt]
+        ESP --> LCD["ST7789 240x240 (SCL: 12, SDA: 11, RST: 10, DC: 9, CS: 8)"]
     end
 
     subgraph IoT [Điều Khiển & Kết Nối]
         ESP --> PC["Wake-on-LAN & LAN HTTP (PC, Laptop, Server)"]
         ESP --> EN["ESP-NOW (Các mạch ESP32 trong phòng)"]
         ESP --> BLE["Chronos BLE (Điện thoại Zalo/SMS)"]
-        ESP --> RL["4x Relays (GPIO 3, 14, 15, 16)"]
+        ESP --> RL["4x Relays (GPIO 7, 13, 14, 21)"]
     end
 ```
 
