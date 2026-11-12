@@ -1,5 +1,5 @@
 // main.cpp
-// Xiaozhi-VN ZClaw Edition — Entry Point & State Machine (ESP32-S3 SuperMini 4MB Flash)
+// S.W.Ni-Oh — Entry Point & State Machine (ESP32-S3 SuperMini 4MB Flash)
 // Production-ready C++17 implementation — no TODOs, no pseudo-code, no exceptions.
 
 #include "audio_hal.h"
@@ -17,12 +17,14 @@
 #include "esp_sntp.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "mdns.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -211,7 +213,7 @@ void button_scanner_task(void* /*arg*/) {
                 if (i == 0) {
                     if (!b.long_fired && held_ms >= BTN_LONG_PRESS_MS) {
                         b.long_fired = true;
-                        ESP_LOGI(TAG, "BTN_MAIN giữ %ums: Reset trạng thái & xóa lịch sử", BTN_LONG_PRESS_MS);
+                        ESP_LOGI(TAG, "BTN_MAIN giữ %ums: Reset trạng thái & xóa lịch sử", static_cast<unsigned>(BTN_LONG_PRESS_MS));
                         AudioHal::instance().request_stop_capture();
                         AudioHal::instance().request_stop_playback();
                         ZClawLlmClient::instance().clear_pending_radio();
@@ -219,7 +221,7 @@ void button_scanner_task(void* /*arg*/) {
                     }
                     if (!b.portal_fired && held_ms >= kPortalHoldMs) {
                         b.portal_fired = true;
-                        ESP_LOGI(TAG, "BTN_MAIN giữ %ums: Mở Web Captive Portal cấu hình", kPortalHoldMs);
+                        ESP_LOGI(TAG, "BTN_MAIN giữ %ums: Mở Web Captive Portal cấu hình", static_cast<unsigned>(kPortalHoldMs));
                         send_fsm_cmd(FsmCommand::OPEN_PORTAL);
                     }
                 } else {
@@ -269,7 +271,7 @@ void bot_fsm_task(void* /*arg*/) {
                 ZClawLlmClient::instance().start_captive_portal(true);
                 UiEyesClock::instance().switch_to_chat_screen();
                 UiEyesClock::instance().set_emotion(EyeEmotion::NGAC_NHIEN);
-                show_ui_toast("Web Portal", "Wi-Fi: Xiaozhi-ZClaw-VN", "Truy cập http://192.168.4.1");
+                show_ui_toast("Web Portal", "Wi-Fi: S.W.Ni-Oh-Setup", "Truy cập http://192.168.4.1");
                 g_bot_state.store(BotState::IDLE);
                 touch_activity();
                 continue;
@@ -413,15 +415,15 @@ void init_wifi_and_portal() {
         g_has_sta_target.store(false);
         ESP_LOGW(TAG, "Chưa có cấu hình Wi-Fi -> Mở SoftAP & Web Captive Portal");
         ZClawLlmClient::instance().start_captive_portal(true);
-        show_ui_toast("Cài đặt lần đầu", "Wi-Fi: Xiaozhi-ZClaw-VN", "Mở http://192.168.4.1");
+        show_ui_toast("Cài đặt lần đầu", "Wi-Fi: S.W.Ni-Oh-Setup", "Mở http://192.168.4.1");
         return;
     }
 
     g_has_sta_target.store(true);
 
     wifi_config_t sta_cfg = {};
-    snprintf(reinterpret_cast<char*>(sta_cfg.sta.ssid), sizeof(sta_cfg.sta.ssid), "%s", cfg.wifi_ssid);
-    snprintf(reinterpret_cast<char*>(sta_cfg.sta.password), sizeof(sta_cfg.sta.password), "%s", cfg.wifi_pass);
+    memcpy(sta_cfg.sta.ssid, cfg.wifi_ssid, std::min(sizeof(sta_cfg.sta.ssid), strlen(cfg.wifi_ssid)));
+    memcpy(sta_cfg.sta.password, cfg.wifi_pass, std::min(sizeof(sta_cfg.sta.password), strlen(cfg.wifi_pass)));
     sta_cfg.sta.threshold.authmode =
         (cfg.wifi_pass[0] != '\0') ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
@@ -440,11 +442,17 @@ void init_wifi_and_portal() {
 
     if ((bits & kWifiConnectedBit) != 0) {
         ESP_LOGI(TAG, "Kết nối Wi-Fi thành công tới %s", cfg.wifi_ssid);
-        show_ui_toast("Wi-Fi Đã Kết Nối", cfg.wifi_ssid, "Xiaozhi-VN ZClaw sẵn sàng!");
+        if (mdns_init() == ESP_OK) {
+            mdns_hostname_set("sw-nioh");
+            mdns_instance_name_set("S.W.Ni-Oh");
+            mdns_service_add("S.W.Ni-Oh Dashboard", "_http", "_tcp", 80, nullptr, 0);
+        }
+        ZClawLlmClient::instance().start_captive_portal(false);
+        show_ui_toast("Wi-Fi Đã Kết Nối", cfg.wifi_ssid, "Mở http://sw-nioh.local");
     } else {
         ESP_LOGW(TAG, "Quá 15s chưa vào được Wi-Fi %s -> Bật Captive Portal dự phòng", cfg.wifi_ssid);
         ZClawLlmClient::instance().start_captive_portal(true);
-        show_ui_toast("Lỗi Wi-Fi (AP+STA)", "Wi-Fi: Xiaozhi-ZClaw-VN", "Cấu hình tại 192.168.4.1");
+        show_ui_toast("Lỗi Wi-Fi (AP+STA)", "Wi-Fi: S.W.Ni-Oh-Setup", "Cấu hình tại 192.168.4.1");
     }
 }
 
@@ -474,14 +482,14 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     zclaw::init_littlefs();
 
-    ESP_LOGI(TAG, "=== Xiaozhi-VN ZClaw Edition | ESP32-S3 | PSRAM=%s | Heap=%lu KB ===",
+    ESP_LOGI(TAG, "=== S.W.Ni-Oh | ESP32-S3 | PSRAM=%s | Heap=%lu KB ===",
              board_has_psram() ? "CO" : "KHONG",
              static_cast<unsigned long>(esp_get_free_heap_size() / 1024));
 
     // 3. Khởi tạo Giao diện ST7789 + Mắt xanh dương + Sóng âm
     ESP_ERROR_CHECK(zclaw::UiEyesClock::instance().init());
     zclaw::UiEyesClock::instance().set_emotion(zclaw::EyeEmotion::SUY_NGHI);
-    zclaw::show_ui_toast("Xiaozhi-VN ZClaw", "Đang khởi động...", "Khởi tạo âm thanh & mạng");
+    zclaw::show_ui_toast("S.W.Ni-Oh", "Đang khởi động...", "Khởi tạo âm thanh & mạng");
 
     // 4. Khởi tạo Audio HAL (INMP441 I2S0 + MAX98357A I2S1) và phát âm báo WAKE
     ESP_ERROR_CHECK(zclaw::AudioHal::instance().init());
@@ -492,7 +500,7 @@ extern "C" void app_main(void) {
     zclaw::init_wifi_and_portal();
 
     // 6. Khởi tạo BLE Chronos & ESP-NOW 2 chiều (chạy đồng cư sóng 2.4GHz)
-    if (zclaw::ChronosBleService::instance().init("Xiaozhi-ZClaw") != ESP_OK) {
+    if (zclaw::ChronosBleService::instance().init("S.W.Ni-Oh") != ESP_OK) {
         ESP_LOGW(TAG, "Khởi tạo BLE Chronos gặp lỗi (tiếp tục chạy Wi-Fi)");
     }
 
@@ -519,7 +527,7 @@ extern "C" void app_main(void) {
     zclaw::touch_activity();
 
     xTaskCreatePinnedToCore(zclaw::button_scanner_task, "btn_scan", 4096, nullptr, 6, nullptr, 0);
-    xTaskCreatePinnedToCore(zclaw::bot_fsm_task,        "zclaw_fsm", 12288, nullptr, 5, nullptr, 1);
+    xTaskCreatePinnedToCore(zclaw::bot_fsm_task,        "nioh_fsm", 12288, nullptr, 5, nullptr, 1);
 
     ESP_LOGI(TAG, "Hệ thống đã sẵn sàng! Nhấn BTN_MAIN (GPIO %d) để trò chuyện.", BTN_MAIN_GPIO);
 }

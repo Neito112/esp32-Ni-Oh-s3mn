@@ -2,7 +2,7 @@
 
 /**
  * @file audio_hal.h
- * @brief Audio Hardware Abstraction Layer cho Xiaozhi-VN ZClaw Edition
+ * @brief Audio Hardware Abstraction Layer cho S.W.Ni-Oh
  *
  * Quản lý đồng thời 2 bus I2S độc lập theo chuẩn ESP-IDF v5.x (driver/i2s_std.h):
  *  - I2S_NUM_0 (RX Master): Microphone INMP441 (GPIO 11/12/13), 16kHz, khuếch đại 1.0x-5.0x + chống clipping, DC-blocker & VAD
@@ -226,7 +226,7 @@ private:
     int16_t* tx_dma_buf_ = nullptr;
 
     uint32_t tx_sample_rate_hz_ = kDefaultSpeakerSampleRateHz;
-    std::atomic<uint8_t> speaker_volume_{75};
+    std::atomic<uint8_t> speaker_volume_{85};
     std::atomic<bool> muted_{false};
     std::atomic<float> mic_gain_{2.5f};
 

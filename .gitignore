@@ -1,19 +1,30 @@
-# ESP-IDF build & generated artifacts
-build/
+# ESP-IDF / PlatformIO build & generated artifacts
+build/*
+!build/sw_nioh.bin
+!build/bootloader.bin
+!build/partition-table.bin
+.pio/
+.venv_pio/
+.tmp_esp_claw/
 managed_components/
 sdkconfig
 sdkconfig.old
+sdkconfig.esp32s3_supermini
 dependencies.lock
 
 # Auto-downloaded header during CMake configure
 components/minimp3/include/minimp3.h
+
+# Simulator local secrets & Python cache
+simulator/sim_config.json
+simulator/__pycache__/
+__pycache__/
+*.pyc
 
 # IDE / OS temporary files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-*.bin
 *.elf
 *.map
-

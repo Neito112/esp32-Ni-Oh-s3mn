@@ -1,5 +1,5 @@
 // ui_eyes_clock.cpp
-// Xiaozhi-VN ZClaw Edition — ST7789 240x240 LVGL v8.4 / ESP-IDF v5.x
+// S.W.Ni-Oh — ST7789 240x240 LVGL v8.4 / ESP-IDF v5.x
 // Production-ready C++17 implementation — no TODOs, no pseudo-code.
 
 #include "ui_eyes_clock.h"
@@ -331,7 +331,7 @@ esp_err_t UiEyesClock::init_spi_lcd() {
     io_cfg.user_ctx            = this;
 
     ret = esp_lcd_new_panel_io_spi(
-        reinterpret_cast<esp_lcd_spi_bus_handle_t>(LCD_SPI_HOST), &io_cfg, &io_handle_);
+        static_cast<esp_lcd_spi_bus_handle_t>(LCD_SPI_HOST), &io_cfg, &io_handle_);
     if (ret != ESP_OK) {
         return ret;
     }
@@ -446,6 +446,12 @@ void UiEyesClock::build_chat_screen() {
     lv_obj_set_style_bg_opa(scr_chat_, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_clear_flag(scr_chat_, LV_OBJ_FLAG_SCROLLABLE);
 
+    lv_obj_t* lbl_brand_chat = lv_label_create(scr_chat_);
+    lv_label_set_text(lbl_brand_chat, "S.W.Ni-Oh");
+    lv_obj_set_style_text_font(lbl_brand_chat, &lv_font_montserrat_12, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl_brand_chat, lv_color_hex(0x2F7CA8), LV_PART_MAIN);
+    lv_obj_align(lbl_brand_chat, LV_ALIGN_TOP_MID, 0, 8);
+
     auto make_eye = [&](int x, int y) -> lv_obj_t* {
         lv_obj_t* e = lv_obj_create(scr_chat_);
         lv_obj_set_size(e, EYE_W, EYE_H);
@@ -460,6 +466,8 @@ void UiEyesClock::build_chat_screen() {
         lv_obj_set_style_shadow_width(e, 18, LV_PART_MAIN);
         lv_obj_set_style_shadow_spread(e, 2, LV_PART_MAIN);
         lv_obj_set_style_shadow_opa(e, LV_OPA_60, LV_PART_MAIN);
+        lv_obj_set_style_transform_pivot_x(e, EYE_W / 2, LV_PART_MAIN);
+        lv_obj_set_style_transform_pivot_y(e, EYE_H / 2, LV_PART_MAIN);
         lv_obj_clear_flag(e, LV_OBJ_FLAG_SCROLLABLE);
         return e;
     };
@@ -467,26 +475,27 @@ void UiEyesClock::build_chat_screen() {
     eye_left_  = make_eye(EYE_LEFT_X,  EYE_Y);
     eye_right_ = make_eye(EYE_RIGHT_X, EYE_Y);
 
-    auto make_eyelid = [&](int x, int y) -> lv_obj_t* {
-        lv_obj_t* el = lv_obj_create(scr_chat_);
-        lv_obj_set_size(el, EYE_W + 12, 0);
-        lv_obj_set_pos(el, x - 6, y);
-        lv_obj_set_style_radius(el, 0, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(el, lv_color_hex(COLOR_BLACK), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(el, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(el, 0, LV_PART_MAIN);
-        lv_obj_set_style_pad_all(el, 0, LV_PART_MAIN);
-        lv_obj_set_style_transform_pivot_x(el, (EYE_W + 12) / 2, LV_PART_MAIN);
-        lv_obj_set_style_transform_pivot_y(el, 12, LV_PART_MAIN);
-        lv_obj_clear_flag(el, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_move_foreground(el);
-        return el;
+    // Cung cười ^ ^ thuần hình học vector (không dùng vùng đen che đè lên mắt)
+    auto make_happy_arc = [&](int x, int y) -> lv_obj_t* {
+        lv_obj_t* arc = lv_arc_create(scr_chat_);
+        lv_obj_set_size(arc, EYE_W + 4, EYE_H + 4);
+        lv_obj_set_pos(arc, x - 2, y + 6);
+        lv_arc_set_bg_angles(arc, 0, 0);
+        lv_arc_set_angles(arc, 200, 340);
+        lv_arc_set_range(arc, 0, 100);
+        lv_arc_set_value(arc, 100);
+        lv_obj_remove_style(arc, nullptr, LV_PART_KNOB);
+        lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_arc_color(arc, lv_color_hex(COLOR_EYE_GRAD), LV_PART_INDICATOR);
+        lv_obj_set_style_arc_width(arc, 11, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
+        lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(arc, LV_OBJ_FLAG_HIDDEN);
+        return arc;
     };
 
-    eyelid_top_left_  = make_eyelid(EYE_LEFT_X,  EYE_Y - 2);
-    eyelid_bot_left_  = make_eyelid(EYE_LEFT_X,  EYE_Y + EYE_H);
-    eyelid_top_right_ = make_eyelid(EYE_RIGHT_X, EYE_Y - 2);
-    eyelid_bot_right_ = make_eyelid(EYE_RIGHT_X, EYE_Y + EYE_H);
+    eye_happy_left_  = make_happy_arc(EYE_LEFT_X,  EYE_Y);
+    eye_happy_right_ = make_happy_arc(EYE_RIGHT_X, EYE_Y);
 
     // 11 thanh sóng âm màu xanh dương đồng bộ với mắt
     for (int i = 0; i < WAVE_N_BARS; i++) {
@@ -647,6 +656,12 @@ void UiEyesClock::build_clock_screen() {
     lv_obj_set_style_bg_color(scr_clock_, lv_color_hex(COLOR_BG), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(scr_clock_, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_clear_flag(scr_clock_, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* lbl_brand_clock = lv_label_create(scr_clock_);
+    lv_label_set_text(lbl_brand_clock, "S.W.Ni-Oh");
+    lv_obj_set_style_text_font(lbl_brand_clock, &lv_font_montserrat_12, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl_brand_clock, lv_color_hex(0x2F7CA8), LV_PART_MAIN);
+    lv_obj_align(lbl_brand_clock, LV_ALIGN_TOP_MID, 0, 3);
 
     // Giờ:Phút lớn
     lbl_time_ = lv_label_create(scr_clock_);
@@ -899,28 +914,30 @@ void UiEyesClock::animate_emotion(EyeEmotion emotion) {
         lv_anim_start(&a);
     };
 
-    auto reset_eyelids = [&]() {
-        lv_obj_t* lids[4] = {eyelid_top_left_, eyelid_bot_left_, eyelid_top_right_, eyelid_bot_right_};
-        for (lv_obj_t* lid : lids) {
-            lv_anim_del(lid, nullptr);
-            lv_obj_set_size(lid, EYE_W + 12, 0);
-            lv_obj_set_style_radius(lid, 0, LV_PART_MAIN);
-            lv_obj_set_style_transform_angle(lid, 0, LV_PART_MAIN);
-        }
-        lv_obj_set_pos(eyelid_top_left_,  EYE_LEFT_X - 6,  EYE_Y - 2);
-        lv_obj_set_pos(eyelid_bot_left_,  EYE_LEFT_X - 6,  EYE_Y + EYE_H);
-        lv_obj_set_pos(eyelid_top_right_, EYE_RIGHT_X - 6, EYE_Y - 2);
-        lv_obj_set_pos(eyelid_bot_right_, EYE_RIGHT_X - 6, EYE_Y + EYE_H);
-    };
-
     auto reset_eyes = [&]() {
         lv_anim_del(this,       nullptr);
         lv_anim_del(eye_left_,  nullptr);
         lv_anim_del(eye_right_, nullptr);
+        if (eye_happy_left_) {
+            lv_anim_del(eye_happy_left_, nullptr);
+            lv_obj_add_flag(eye_happy_left_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(eye_happy_left_, EYE_LEFT_X - 2, EYE_Y + 6);
+        }
+        if (eye_happy_right_) {
+            lv_anim_del(eye_happy_right_, nullptr);
+            lv_obj_add_flag(eye_happy_right_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(eye_happy_right_, EYE_RIGHT_X - 2, EYE_Y + 6);
+        }
+        lv_obj_clear_flag(eye_left_,  LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(eye_right_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_size(eye_left_,  EYE_W, EYE_H);
         lv_obj_set_size(eye_right_, EYE_W, EYE_H);
         lv_obj_set_pos(eye_left_,  EYE_LEFT_X,  EYE_Y);
         lv_obj_set_pos(eye_right_, EYE_RIGHT_X, EYE_Y);
+        lv_obj_set_style_radius(eye_left_,  EYE_RAD, LV_PART_MAIN);
+        lv_obj_set_style_radius(eye_right_, EYE_RAD, LV_PART_MAIN);
+        lv_obj_set_style_transform_angle(eye_left_,  0, LV_PART_MAIN);
+        lv_obj_set_style_transform_angle(eye_right_, 0, LV_PART_MAIN);
         lv_obj_set_style_opa(eye_left_,  LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_opa(eye_right_, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_shadow_width(eye_left_,  18, LV_PART_MAIN);
@@ -934,7 +951,6 @@ void UiEyesClock::animate_emotion(EyeEmotion emotion) {
         apply_backlight_hardware(backlight_pct_.load());
     }
 
-    reset_eyelids();
     reset_eyes();
 
     switch (emotion) {
@@ -944,8 +960,8 @@ void UiEyesClock::animate_emotion(EyeEmotion emotion) {
     case EyeEmotion::DANG_NGHE:
         make_anim(eye_left_,  anim_set_height_cb, EYE_H, 62, 180);
         make_anim(eye_right_, anim_set_height_cb, EYE_H, 62, 180);
-        make_anim(eye_left_,  anim_set_y_cb, EYE_Y, EYE_Y - 6, 180);
-        make_anim(eye_right_, anim_set_y_cb, EYE_Y, EYE_Y - 6, 180);
+        make_anim(eye_left_,  anim_set_y_cb, EYE_Y, EYE_Y - 3, 180);
+        make_anim(eye_right_, anim_set_y_cb, EYE_Y, EYE_Y - 3, 180);
         lv_obj_set_style_shadow_opa(eye_left_,  LV_OPA_90, LV_PART_MAIN);
         lv_obj_set_style_shadow_opa(eye_right_, LV_OPA_90, LV_PART_MAIN);
         make_anim(eye_left_,  anim_set_opa_cb, LV_OPA_COVER, 210, 550, 0, true);
@@ -953,22 +969,24 @@ void UiEyesClock::animate_emotion(EyeEmotion emotion) {
         break;
 
     case EyeEmotion::SUY_NGHI:
-        // Mắt trái nheo nhẹ, mắt phải liếc lên phía trên phải
-        make_anim(eyelid_top_left_, anim_set_height_cb, 0, 26, 260);
-        make_anim(eye_right_, anim_set_x_cb, EYE_RIGHT_X, EYE_RIGHT_X + 10, 280);
-        make_anim(eye_right_, anim_set_y_cb, EYE_Y, EYE_Y - 6, 280);
+        // Biến đổi hình học trực tiếp: mắt trái dẹt nheo lại (không che đen), mắt phải liếc lên
+        lv_obj_set_style_radius(eye_left_, 12, LV_PART_MAIN);
+        make_anim(eye_left_,  anim_set_height_cb, EYE_H, 24, 240);
+        make_anim(eye_left_,  anim_set_y_cb, EYE_Y, EYE_Y + 16, 240);
+        make_anim(eye_right_, anim_set_x_cb, EYE_RIGHT_X, EYE_RIGHT_X + 8, 260);
+        make_anim(eye_right_, anim_set_y_cb, EYE_Y, EYE_Y - 6, 260);
         break;
 
     case EyeEmotion::VUI_VE:
-        // Mí dưới bo tròn trồi lên tạo hình vầng trăng khuyết cười ^ ^
-        lv_obj_set_style_radius(eyelid_bot_left_,  26, LV_PART_MAIN);
-        lv_obj_set_style_radius(eyelid_bot_right_, 26, LV_PART_MAIN);
-        lv_obj_set_y(eyelid_bot_left_,  EYE_Y + 28);
-        lv_obj_set_y(eyelid_bot_right_, EYE_Y + 28);
-        make_anim(eyelid_bot_left_,  anim_set_height_cb, 0, EYE_H, 220);
-        make_anim(eyelid_bot_right_, anim_set_height_cb, 0, EYE_H, 220);
-        make_anim(eye_left_,  anim_set_y_cb, EYE_Y, EYE_Y - 4, 360, 0, true);
-        make_anim(eye_right_, anim_set_y_cb, EYE_Y, EYE_Y - 4, 360, 0, true);
+        // Hiện cặp vòm cung ^ ^ vector thuần túy, ẩn hình chữ nhật mắt để 0% vệt đen
+        lv_obj_add_flag(eye_left_,  LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(eye_right_, LV_OBJ_FLAG_HIDDEN);
+        if (eye_happy_left_ && eye_happy_right_) {
+            lv_obj_clear_flag(eye_happy_left_,  LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(eye_happy_right_, LV_OBJ_FLAG_HIDDEN);
+            make_anim(eye_happy_left_,  anim_set_y_cb, EYE_Y + 8, EYE_Y + 2, 340, 0, true);
+            make_anim(eye_happy_right_, anim_set_y_cb, EYE_Y + 8, EYE_Y + 2, 340, 0, true);
+        }
         break;
 
     case EyeEmotion::NGAC_NHIEN: {
@@ -981,19 +999,19 @@ void UiEyesClock::animate_emotion(EyeEmotion emotion) {
     }
 
     case EyeEmotion::BUON:
-        // Mí trên nghiêng xếch kiểu buồn (/ \) + giảm độ sáng mắt
-        lv_obj_set_y(eyelid_top_left_,  EYE_Y - 10);
-        lv_obj_set_y(eyelid_top_right_, EYE_Y - 10);
-        lv_obj_set_style_transform_angle(eyelid_top_left_,  -140, LV_PART_MAIN);
-        lv_obj_set_style_transform_angle(eyelid_top_right_,  140, LV_PART_MAIN);
-        make_anim(eyelid_top_left_,  anim_set_height_cb, 0, 26, 350);
-        make_anim(eyelid_top_right_, anim_set_height_cb, 0, 26, 350);
+        // Xoay nghiêng & thu dẹt chính khối squircle (-14° / +14°), tuyệt đối không đắp mảng đen
+        lv_obj_set_style_transform_angle(eye_left_,  -140, LV_PART_MAIN);
+        lv_obj_set_style_transform_angle(eye_right_,  140, LV_PART_MAIN);
+        make_anim(eye_left_,  anim_set_height_cb, EYE_H, 32, 320);
+        make_anim(eye_right_, anim_set_height_cb, EYE_H, 32, 320);
+        make_anim(eye_left_,  anim_set_y_cb, EYE_Y, EYE_Y + 12, 320);
+        make_anim(eye_right_, anim_set_y_cb, EYE_Y, EYE_Y + 12, 320);
         make_anim(eye_left_,  anim_set_opa_cb, LV_OPA_COVER, LV_OPA_60, 350);
         make_anim(eye_right_, anim_set_opa_cb, LV_OPA_COVER, LV_OPA_60, 350);
         break;
 
     case EyeEmotion::NGU_GAT:
-        // Díp dần xuống 4px giữa mắt và hạ đèn nền (không ghi đè cấu hình người dùng)
+        // Díp dần xuống 4px giữa mắt và hạ đèn nền
         make_anim(eye_left_,  anim_set_height_cb, EYE_H, 4, 1600);
         make_anim(eye_right_, anim_set_height_cb, EYE_H, 4, 1600);
         make_anim(eye_left_,  anim_set_y_cb, EYE_Y, EYE_Y + EYE_H / 2 - 2, 1600);
@@ -1006,7 +1024,7 @@ void UiEyesClock::animate_emotion(EyeEmotion emotion) {
 }
 
 // ---------------------------------------------------------------------------
-// tick_blink_and_glance()
+// tick_blink_and_glance() — Chớp mắt trực tiếp bằng height 56px -> 4px -> 56px
 // ---------------------------------------------------------------------------
 void UiEyesClock::tick_blink_and_glance(uint32_t now_ms) {
     if (current_emotion_.load() != EyeEmotion::BINH_THUONG) return;
@@ -1015,18 +1033,29 @@ void UiEyesClock::tick_blink_and_glance(uint32_t now_ms) {
         last_blink_ms_ = now_ms;
         next_blink_ms_ = (esp_random() % 2200U) + 2800U;
 
-        auto blink = [](lv_obj_t* lid) {
-            lv_anim_t a;
-            lv_anim_init(&a);
-            lv_anim_set_var(&a, lid);
-            lv_anim_set_exec_cb(&a, anim_set_height_cb);
-            lv_anim_set_values(&a, 0, EYE_H + 4);
-            lv_anim_set_time(&a, 65);
-            lv_anim_set_playback_time(&a, 75);
-            lv_anim_start(&a);
+        auto blink = [](lv_obj_t* eye) {
+            lv_anim_t ah;
+            lv_anim_init(&ah);
+            lv_anim_set_var(&ah, eye);
+            lv_anim_set_exec_cb(&ah, anim_set_height_cb);
+            lv_anim_set_values(&ah, EYE_H, 4);
+            lv_anim_set_time(&ah, 65);
+            lv_anim_set_playback_time(&ah, 75);
+            lv_anim_set_path_cb(&ah, lv_anim_path_ease_in_out);
+            lv_anim_start(&ah);
+
+            lv_anim_t ay;
+            lv_anim_init(&ay);
+            lv_anim_set_var(&ay, eye);
+            lv_anim_set_exec_cb(&ay, anim_set_y_cb);
+            lv_anim_set_values(&ay, EYE_Y, EYE_Y + EYE_H / 2 - 2);
+            lv_anim_set_time(&ay, 65);
+            lv_anim_set_playback_time(&ay, 75);
+            lv_anim_set_path_cb(&ay, lv_anim_path_ease_in_out);
+            lv_anim_start(&ay);
         };
-        blink(eyelid_top_left_);
-        blink(eyelid_top_right_);
+        blink(eye_left_);
+        blink(eye_right_);
     }
 
     if (now_ms - last_glance_ms_ >= next_glance_ms_) {
@@ -1114,7 +1143,7 @@ void UiEyesClock::tick_clock_update(bool force) {
 
     LunarDate ld = gregorian_to_viet_lunar(
         tm_info.tm_mday, tm_info.tm_mon + 1, tm_info.tm_year + 1900);
-    char lunar_buf[48];
+    char lunar_buf[72];
     snprintf(lunar_buf, sizeof(lunar_buf), "Âm lịch: %d/%d%s (%d)",
              ld.lunar_day, ld.lunar_month,
              ld.is_leap ? " Nhuận" : "",

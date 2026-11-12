@@ -1,5 +1,5 @@
 // chronos_ble.cpp
-// Xiaozhi-VN ZClaw Edition — NimBLE GATT Server tương thích app Chronos (NUS)
+// S.W.Ni-Oh — NimBLE GATT Server tương thích app Chronos (NUS)
 // Production-ready C++17 implementation — no TODOs, no pseudo-code.
 
 #include "chronos_ble.h"
@@ -12,6 +12,12 @@
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -125,7 +131,7 @@ esp_err_t ChronosBleService::init(const char* device_name) {
         return ESP_FAIL;
     }
 
-    rc = ble_svc_gap_device_name_set(device_name ? device_name : "Xiaozhi-ZClaw");
+    rc = ble_svc_gap_device_name_set(device_name ? device_name : "S.W.Ni-Oh");
     if (rc != 0) {
         ESP_LOGE(TAG, "Không đặt được device name: %d", rc);
         return ESP_FAIL;
@@ -133,7 +139,7 @@ esp_err_t ChronosBleService::init(const char* device_name) {
 
     nimble_port_freertos_init(ble_host_task);
     initialized_.store(true);
-    ESP_LOGI(TAG, "Chronos BLE GATT Server đã khởi tạo (%s)", device_name ? device_name : "Xiaozhi-ZClaw");
+    ESP_LOGI(TAG, "Chronos BLE GATT Server đã khởi tạo (%s)", device_name ? device_name : "S.W.Ni-Oh");
     return ESP_OK;
 }
 
@@ -230,7 +236,7 @@ void ChronosBleService::start_advertising() {
     if (rc != 0) {
         ESP_LOGE(TAG, "Lỗi bắt đầu quảng bá BLE: %d", rc);
     } else {
-        ESP_LOGI(TAG, "Đang quảng bá BLE NUS: %s", name ? name : "Xiaozhi-ZClaw");
+        ESP_LOGI(TAG, "Đang quảng bá BLE NUS: %s", name ? name : "S.W.Ni-Oh");
     }
 }
 
@@ -304,7 +310,7 @@ int ChronosBleService::nus_access_cb(uint16_t conn_handle, uint16_t attr_handle,
             uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
             if (len == 0 || len > 512) {
                 ESP_LOGW(TAG, "Độ dài chunk BLE không hợp lệ: %u", len);
-                return BLE_ATT_ERR_INVALID_ATTR_LEN;
+                return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
             }
             uint8_t  buf[512];
             uint16_t read_len = 0;
@@ -378,6 +384,8 @@ void ChronosBleService::parse_chronos_packet(const uint8_t* data, size_t len) {
         return;
     }
 
+    rx_packets_.fetch_add(1, std::memory_order_relaxed);
+
     // Kiểm tra frame chuẩn Chronos app (marker 0xFF hoặc 0xFE ở byte[3])
     if (len >= 5 && (data[3] == 0xFF || data[3] == 0xFE)) {
         handle_chronos_extended_frame(data, len);
@@ -411,6 +419,9 @@ void ChronosBleService::parse_chronos_packet(const uint8_t* data, size_t len) {
         case 0xCA:
             handle_navigation_packet(payload, payload_len);
             break;
+        case 0xC8:
+            handle_weather_packet(payload, payload_len);
+            break;
         case 0xC3:
             handle_battery_packet(payload, payload_len);
             break;
@@ -422,6 +433,11 @@ void ChronosBleService::parse_chronos_packet(const uint8_t* data, size_t len) {
 
 // ---------------------------------------------------------------------------
 // handle_chronos_extended_frame() — Frame tương thích app Chronos (0xFF/0xFE)
+//   - 0xFF 0x93: Time Sync
+//   - 0xFF 0x88: Weather Sync
+//   - 0xFF 0x72: Notification Push
+//   - 0xFE 0xEF: Google Maps Turn-by-Turn Navigation
+//   - 0xFF 0x91: Phone Battery
 // ---------------------------------------------------------------------------
 void ChronosBleService::handle_chronos_extended_frame(const uint8_t* data, size_t len) {
     const uint8_t marker = data[3];
@@ -436,6 +452,14 @@ void ChronosBleService::handle_chronos_extended_frame(const uint8_t* data, size_
                     handle_chronos_rtc_time(p + 1, plen - 1);
                 } else if (plen >= 7) {
                     handle_chronos_rtc_time(p, plen);
+                }
+                break;
+
+            case 0x88: // Chronos Weather Push: [sub(1)=0x80?] [icon] [temp_s8] ...
+                if (plen >= 3 && p[0] == 0x80) {
+                    handle_weather_packet(p + 1, plen - 1);
+                } else {
+                    handle_weather_packet(p, plen);
                 }
                 break;
 
@@ -465,6 +489,9 @@ void ChronosBleService::handle_chronos_extended_frame(const uint8_t* data, size_
             // Dừng chỉ đường
             ChronosNavInfo nav = {};
             nav.active = false;
+            portENTER_CRITICAL(&status_spin_);
+            last_nav_ = nav;
+            portEXIT_CRITICAL(&status_spin_);
             UiEyesClock::instance().update_nav_info(nav);
             if (cb_navigation_) cb_navigation_(nav);
             return;
@@ -499,6 +526,9 @@ void ChronosBleService::handle_chronos_extended_frame(const uint8_t* data, size_
             if (fields[3]) {
                 nav.distance_m = static_cast<uint32_t>(strtoul(fields[3], nullptr, 10));
             }
+            portENTER_CRITICAL(&status_spin_);
+            last_nav_ = nav;
+            portEXIT_CRITICAL(&status_spin_);
             UiEyesClock::instance().update_nav_info(nav);
             if (cb_navigation_) cb_navigation_(nav);
         }
@@ -539,6 +569,10 @@ void ChronosBleService::handle_time_sync(const uint8_t* p, size_t len) {
     strftime(buf, sizeof(buf), "%H:%M:%S %d/%m/%Y", &t);
     ESP_LOGI(TAG, "Đã đồng bộ giờ từ Chronos: %s", buf);
 
+    portENTER_CRITICAL(&status_spin_);
+    snprintf(last_time_sync_, sizeof(last_time_sync_), "%s", buf);
+    portEXIT_CRITICAL(&status_spin_);
+
     if (cb_time_sync_) cb_time_sync_(t);
 }
 
@@ -561,10 +595,49 @@ void ChronosBleService::handle_chronos_rtc_time(const uint8_t* p, size_t len) {
     if (epoch > 0) {
         struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
         settimeofday(&tv, nullptr);
-        ESP_LOGI(TAG, "Đã đồng bộ giờ RTC Chronos: %02d:%02d %02d/%02d/%04d",
-                 t.tm_hour, t.tm_min, t.tm_mday, t.tm_mon + 1, t.tm_year + 1900);
+        char buf[32] = {};
+        strftime(buf, sizeof(buf), "%H:%M:%S %d/%m/%Y", &t);
+        ESP_LOGI(TAG, "Đã đồng bộ giờ RTC Chronos: %s", buf);
+
+        portENTER_CRITICAL(&status_spin_);
+        snprintf(last_time_sync_, sizeof(last_time_sync_), "%s", buf);
+        portEXIT_CRITICAL(&status_spin_);
+
         if (cb_time_sync_) cb_time_sync_(t);
     }
+}
+
+// ---------------------------------------------------------------------------
+// handle_weather_packet() — Tự động nhận Thời tiết từ App Chronos (0xFF 0x88)
+// Payload phổ biến: [icon_u8] [temp_s8] [humidity_u8 (opt)] ...
+// ---------------------------------------------------------------------------
+void ChronosBleService::handle_weather_packet(const uint8_t* p, size_t len) {
+    if (!p || len < 2) return;
+
+    WeatherData w = {};
+    w.valid = true;
+    const uint8_t icon = p[0];
+    w.temp_c = static_cast<float>(static_cast<int8_t>(p[1]));
+    w.humidity_pct = (len >= 3 && p[2] <= 100) ? p[2] : 75;
+
+    switch (icon) {
+        case 0: snprintf(w.condition, sizeof(w.condition), "Nắng"); break;
+        case 1: snprintf(w.condition, sizeof(w.condition), "Ít mây"); break;
+        case 2: snprintf(w.condition, sizeof(w.condition), "Có mây"); break;
+        case 3: snprintf(w.condition, sizeof(w.condition), "Có mưa"); break;
+        case 4: snprintf(w.condition, sizeof(w.condition), "Mưa dông"); break;
+        case 5: snprintf(w.condition, sizeof(w.condition), "Sương mù"); break;
+        default: snprintf(w.condition, sizeof(w.condition), "Ổn định"); break;
+    }
+
+    portENTER_CRITICAL(&status_spin_);
+    last_weather_ = w;
+    portEXIT_CRITICAL(&status_spin_);
+
+    ESP_LOGI(TAG, "Chronos 0x88 Thời tiết: %.0f°C, %u%%, %s",
+             static_cast<double>(w.temp_c), w.humidity_pct, w.condition);
+    UiEyesClock::instance().update_weather(w);
+    if (cb_weather_) cb_weather_(w);
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +679,10 @@ void ChronosBleService::handle_notification_packet(const uint8_t* p, size_t len)
 
     notif.unread = true;
     ESP_LOGI(TAG, "Thông báo [%s]: %s", notif.app_name, notif.title);
+
+    portENTER_CRITICAL(&status_spin_);
+    last_notif_ = notif;
+    portEXIT_CRITICAL(&status_spin_);
 
     UiEyesClock::instance().show_notification(notif);
     if (cb_notification_) cb_notification_(notif);
@@ -652,8 +729,31 @@ void ChronosBleService::handle_navigation_packet(const uint8_t* p, size_t len) {
     ESP_LOGI(TAG, "Điều hướng: %s (%lum) - %s",
              nav.direction, static_cast<unsigned long>(nav.distance_m), nav.street_name);
 
+    portENTER_CRITICAL(&status_spin_);
+    last_nav_ = nav;
+    portEXIT_CRITICAL(&status_spin_);
+
     UiEyesClock::instance().update_nav_info(nav);
     if (cb_navigation_) cb_navigation_(nav);
+}
+
+// ---------------------------------------------------------------------------
+// get_sync_status()
+// ---------------------------------------------------------------------------
+ChronosSyncStatus ChronosBleService::get_sync_status() const {
+    ChronosSyncStatus s = {};
+    s.initialized       = initialized_.load();
+    s.connected         = connected_.load();
+    s.phone_battery_pct = phone_battery_pct_.load();
+    s.rx_packets        = rx_packets_.load();
+
+    portENTER_CRITICAL(&status_spin_);
+    snprintf(s.last_time_sync, sizeof(s.last_time_sync), "%s", last_time_sync_);
+    s.last_weather = last_weather_;
+    s.last_notif   = last_notif_;
+    s.last_nav     = last_nav_;
+    portEXIT_CRITICAL(&status_spin_);
+    return s;
 }
 
 // ---------------------------------------------------------------------------

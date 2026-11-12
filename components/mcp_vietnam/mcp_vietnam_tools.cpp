@@ -1,5 +1,5 @@
 // mcp_vietnam_tools.cpp
-// Xiaozhi-VN ZClaw Edition — Vietnamese Native MCP (10 công cụ 100% Tiếng Việt)
+// S.W.Ni-Oh — Vietnamese Native MCP (10 công cụ 100% Tiếng Việt)
 // Production-ready C++17 implementation — no TODOs, no pseudo-code, no exceptions.
 
 #include "mcp_vietnam_tools.h"
@@ -23,6 +23,7 @@
 #include <ctime>
 #include <initializer_list>
 #include <strings.h>
+#include <vector>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -198,7 +199,9 @@ esp_err_t http_get_text(const char* url,
                         std::string& out_body,
                         int* out_status = nullptr,
                         size_t max_bytes = 32768,
-                        const char* user_agent = "Xiaozhi-VN-ZClaw/1.0") {
+                        const char* user_agent = "SW-NiOh/1.0",
+                        const char* extra_hdr_name = nullptr,
+                        const char* extra_hdr_val = nullptr) {
     out_body.clear();
     if (!url) return ESP_ERR_INVALID_ARG;
 
@@ -213,6 +216,9 @@ esp_err_t http_get_text(const char* url,
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return ESP_ERR_NO_MEM;
+    if (extra_hdr_name && extra_hdr_val && extra_hdr_name[0] && extra_hdr_val[0]) {
+        esp_http_client_set_header(client, extra_hdr_name, extra_hdr_val);
+    }
 
     esp_err_t err = ESP_OK;
     int status    = 0;
@@ -272,6 +278,60 @@ esp_err_t http_get_text(const char* url,
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return err;
+}
+
+esp_err_t http_post_json(const char* url,
+                         const char* json_body,
+                         std::string& out_body,
+                         int* out_status = nullptr,
+                         const char* hdr_name = nullptr,
+                         const char* hdr_val = nullptr,
+                         size_t max_bytes = 24576) {
+    out_body.clear();
+    if (!url || !json_body) return ESP_ERR_INVALID_ARG;
+
+    esp_http_client_config_t cfg = {};
+    cfg.url               = url;
+    cfg.method            = HTTP_METHOD_POST;
+    cfg.timeout_ms        = 12000;
+    cfg.buffer_size       = 2048;
+    cfg.buffer_size_tx    = 1024;
+    cfg.user_agent        = "SW-NiOh/1.0";
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return ESP_ERR_NO_MEM;
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    if (hdr_name && hdr_val && hdr_name[0] && hdr_val[0]) {
+        esp_http_client_set_header(client, hdr_name, hdr_val);
+    }
+
+    const int blen = static_cast<int>(strlen(json_body));
+    esp_err_t err = esp_http_client_open(client, blen);
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return err;
+    }
+    if (esp_http_client_write(client, json_body, blen) != blen ||
+        esp_http_client_fetch_headers(client) < 0) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+    if (out_status) *out_status = esp_http_client_get_status_code(client);
+
+    char* chunk_buf = static_cast<char*>(board_malloc_prefer_spiram(2048));
+    if (chunk_buf) {
+        while (out_body.size() < max_bytes) {
+            int r = esp_http_client_read(client, chunk_buf, 2048);
+            if (r <= 0) break;
+            out_body.append(chunk_buf, static_cast<size_t>(r));
+        }
+        board_free(chunk_buf);
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return ESP_OK;
 }
 
 std::string make_error_json(const char* msg) {
@@ -524,6 +584,35 @@ esp_err_t McpRegistry::init() {
         return ret;
     }
 
+    // Đăng ký provider & executor sang nioh_agent (tách rời dependency vòng)
+    ZClawLlmClient::instance().register_mcp_tools(
+        [this]() -> cJSON* { return this->build_tools_schema_json(); },
+        [this](const char* name, const char* args_json) -> std::string {
+            return this->execute_tool(name, args_json);
+        });
+    ZClawLlmClient::instance().register_chronos_status_provider([]() -> std::string {
+        const ChronosSyncStatus st = ChronosBleService::instance().get_sync_status();
+        cJSON* j = cJSON_CreateObject();
+        cJSON_AddBoolToObject(j, "connected", st.connected);
+        cJSON_AddNumberToObject(j, "phone_battery_pct", st.phone_battery_pct);
+        cJSON_AddNumberToObject(j, "rx_packets", st.rx_packets);
+        cJSON_AddStringToObject(j, "last_time_sync", st.last_time_sync);
+        cJSON_AddBoolToObject(j, "weather_valid", st.last_weather.valid);
+        cJSON_AddNumberToObject(j, "temp_c", static_cast<double>(st.last_weather.temp_c));
+        cJSON_AddStringToObject(j, "condition", st.last_weather.condition);
+        cJSON_AddStringToObject(j, "notif_title", st.last_notif.title);
+        cJSON_AddStringToObject(j, "notif_app", st.last_notif.app_name);
+        cJSON_AddBoolToObject(j, "nav_active", st.last_nav.active);
+        cJSON_AddStringToObject(j, "nav_dir", st.last_nav.direction);
+        cJSON_AddNumberToObject(j, "nav_dist", static_cast<double>(st.last_nav.distance_m));
+        cJSON_AddStringToObject(j, "nav_street", st.last_nav.street_name);
+        char* s = cJSON_PrintUnformatted(j);
+        std::string out = s ? s : "{}";
+        if (s) cJSON_free(s);
+        cJSON_Delete(j);
+        return out;
+    });
+
     initialized_.store(true);
     ESP_LOGI(TAG, "McpRegistry sẵn sàng với 10 công cụ MCP Tiếng Việt");
     return ESP_OK;
@@ -631,20 +720,20 @@ cJSON* McpRegistry::build_tools_schema_json() const {
     // 4. tra_cuu_thong_tin
     {
         cJSON* p = cJSON_CreateObject();
-        add_str_prop(p, "tu_khoa", "Từ khóa, nhân vật lịch sử, địa danh hoặc khái niệm cần tra cứu");
+        add_str_prop(p, "tu_khoa", "Từ khóa, sự kiện, nhân vật, địa danh hoặc câu hỏi cần tìm kiếm trên Web / Wikipedia");
         add_tool("tra_cuu_thong_tin",
-                 "Tra cứu kiến thức bách khoa chính xác qua Wikipedia Tiếng Việt",
+                 "Tìm kiếm thông tin trên Web (DuckDuckGo / Tavily / Brave / Serper / SearXNG) và Wikipedia Tiếng Việt theo cấu hình Dashboard",
                  p, make_req({"tu_khoa"}));
     }
 
     // 5. phat_nhac_truc_tuyen
     {
         cJSON* p = cJSON_CreateObject();
-        add_str_prop(p, "tu_khoa_hoac_url", "Tên bài hát, tên ca sĩ, kênh Radio (vov1/vov2/vov3/vov giao thong) hoặc link YouTube/SoundCloud/MP3");
-        add_str_prop(p, "nen_tang", "Nền tảng phát: \"youtube\", \"soundcloud\", hoặc \"radio\"");
+        add_str_prop(p, "tu_khoa_hoac_url", "Tên bài hát, tên ca sĩ, link YouTube/SoundCloud/MP3 (hoặc kênh VOV chỉ khi người dùng nói rõ Radio/VOV)");
+        add_str_prop(p, "nen_tang", "Mặc định chọn \"youtube\" hoặc \"soundcloud\". Chỉ chọn \"radio\" khi người dùng nói rõ đài Radio/VOV.");
         add_tool("phat_nhac_truc_tuyen",
-                 "Phát nhạc trực tuyến từ YouTube, SoundCloud hoặc Radio VOV trực tiếp ra loa thiết bị kèm sóng âm 11 dải",
-                 p, make_req({"tu_khoa_hoac_url", "nen_tang"}));
+                 "Phát nhạc trực tuyến YouTube hoặc SoundCloud trực tiếp ra loa (hoặc Radio VOV khi được yêu cầu rõ ràng)",
+                 p, make_req({"tu_khoa_hoac_url"}));
     }
 
     // 6. xem_video_truc_tuyen
@@ -918,7 +1007,7 @@ std::string McpRegistry::get_vietnamese_time_lunar_json() {
     snprintf(duong_buf, sizeof(duong_buf), "%s, %02d/%02d/%04d",
              kThu[tm_info.tm_wday % 7], day, mon, year);
 
-    char am_buf[64];
+    char am_buf[96];
     snprintf(am_buf, sizeof(am_buf), "Ngày %d tháng %d%s năm %s %s (%d)",
              ln.day, ln.month, ln.leap ? " (Nhuận)" : "",
              kCan[can_nam], kChi[chi_nam], ln.year);
@@ -1031,7 +1120,7 @@ std::string McpRegistry::tool_doc_tin_tuc(cJSON* args) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. tra_cuu_thong_tin(tu_khoa) — Wikipedia Tiếng Việt REST API
+// 4. tra_cuu_thong_tin(tu_khoa) — Web Search (DuckDuckGo / Tavily / Brave / Serper / SearXNG) + Wikipedia VI
 // ---------------------------------------------------------------------------
 std::string McpRegistry::tool_tra_cuu_thong_tin(cJSON* args) {
     const cJSON* j_kw = cJSON_GetObjectItem(args, "tu_khoa");
@@ -1039,16 +1128,175 @@ std::string McpRegistry::tool_tra_cuu_thong_tin(cJSON* args) {
         return make_error_json("Thiếu từ khóa cần tra cứu");
     }
 
-    std::string kw = j_kw->valuestring;
+    const ZClawConfig cfg = ZClawLlmClient::instance().get_config();
+    const std::string kw  = j_kw->valuestring;
+    const std::string eng = cfg.search_engine[0] ? cfg.search_engine : "ddg_wiki";
+
+    // 1) Tavily AI Search
+    if (eng == "tavily" && cfg.search_api_key[0] != '\0') {
+        cJSON* req = cJSON_CreateObject();
+        cJSON_AddStringToObject(req, "api_key", cfg.search_api_key);
+        cJSON_AddStringToObject(req, "query", kw.c_str());
+        cJSON_AddNumberToObject(req, "max_results", 3);
+        cJSON_AddBoolToObject(req, "include_answer", true);
+        char* bstr = cJSON_PrintUnformatted(req);
+        cJSON_Delete(req);
+        std::string resp;
+        int st = 0;
+        if (bstr && http_post_json("https://api.tavily.com/search", bstr, resp, &st) == ESP_OK && st == 200) {
+            cJSON_free(bstr);
+            cJSON* root = cJSON_Parse(resp.c_str());
+            if (root) {
+                cJSON* out = cJSON_CreateObject();
+                cJSON_AddBoolToObject(out, "ok", true);
+                cJSON_AddStringToObject(out, "cong_cu", "Tavily AI Search");
+                cJSON* jans = cJSON_GetObjectItemCaseSensitive(root, "answer");
+                if (cJSON_IsString(jans) && jans->valuestring) {
+                    cJSON_AddStringToObject(out, "tom_tat", jans->valuestring);
+                }
+                cJSON_AddItemToObject(out, "ket_qua", cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(root, "results"), true));
+                cJSON_Delete(root);
+                return cjson_to_string_and_free(out);
+            }
+        } else if (bstr) {
+            cJSON_free(bstr);
+        }
+    }
+
+    // 2) Brave Search API
+    if (eng == "brave" && cfg.search_api_key[0] != '\0') {
+        std::string url = "https://api.search.brave.com/res/v1/web/search?count=3&q=" + url_encode(kw.c_str(), false);
+        std::string resp;
+        int st = 0;
+        if (http_get_text(url.c_str(), resp, &st, 24576, "SW-NiOh/1.0", "X-Subscription-Token", cfg.search_api_key) == ESP_OK && st == 200) {
+            cJSON* root = cJSON_Parse(resp.c_str());
+            if (root) {
+                cJSON* web = cJSON_GetObjectItemCaseSensitive(root, "web");
+                cJSON* res = web ? cJSON_GetObjectItemCaseSensitive(web, "results") : nullptr;
+                cJSON* arr = cJSON_CreateArray();
+                if (cJSON_IsArray(res)) {
+                    const int n = std::min<int>(cJSON_GetArraySize(res), 3);
+                    for (int i = 0; i < n; ++i) {
+                        cJSON* r0 = cJSON_GetArrayItem(res, i);
+                        cJSON* item = cJSON_CreateObject();
+                        cJSON* jt = cJSON_GetObjectItemCaseSensitive(r0, "title");
+                        cJSON* jd = cJSON_GetObjectItemCaseSensitive(r0, "description");
+                        if (cJSON_IsString(jt)) cJSON_AddStringToObject(item, "tieu_de", jt->valuestring);
+                        if (cJSON_IsString(jd)) cJSON_AddStringToObject(item, "mo_ta", jd->valuestring);
+                        cJSON_AddItemToArray(arr, item);
+                    }
+                }
+                cJSON_Delete(root);
+                cJSON* out = cJSON_CreateObject();
+                cJSON_AddBoolToObject(out, "ok", true);
+                cJSON_AddStringToObject(out, "cong_cu", "Brave Search");
+                cJSON_AddItemToObject(out, "ket_qua", arr);
+                return cjson_to_string_and_free(out);
+            }
+        }
+    }
+
+    // 3) Serper.dev Google Search
+    if (eng == "serper" && cfg.search_api_key[0] != '\0') {
+        cJSON* req = cJSON_CreateObject();
+        cJSON_AddStringToObject(req, "q", kw.c_str());
+        cJSON_AddStringToObject(req, "gl", "vn");
+        cJSON_AddStringToObject(req, "hl", "vi");
+        char* bstr = cJSON_PrintUnformatted(req);
+        cJSON_Delete(req);
+        std::string resp;
+        int st = 0;
+        if (bstr && http_post_json("https://google.serper.dev/search", bstr, resp, &st, "X-API-KEY", cfg.search_api_key) == ESP_OK && st == 200) {
+            cJSON_free(bstr);
+            cJSON* root = cJSON_Parse(resp.c_str());
+            if (root) {
+                cJSON* org = cJSON_GetObjectItemCaseSensitive(root, "organic");
+                cJSON* arr = cJSON_CreateArray();
+                if (cJSON_IsArray(org)) {
+                    const int n = std::min<int>(cJSON_GetArraySize(org), 3);
+                    for (int i = 0; i < n; ++i) {
+                        cJSON* r0 = cJSON_GetArrayItem(org, i);
+                        cJSON* item = cJSON_CreateObject();
+                        cJSON* jt = cJSON_GetObjectItemCaseSensitive(r0, "title");
+                        cJSON* js = cJSON_GetObjectItemCaseSensitive(r0, "snippet");
+                        if (cJSON_IsString(jt)) cJSON_AddStringToObject(item, "tieu_de", jt->valuestring);
+                        if (cJSON_IsString(js)) cJSON_AddStringToObject(item, "mo_ta", js->valuestring);
+                        cJSON_AddItemToArray(arr, item);
+                    }
+                }
+                cJSON_Delete(root);
+                cJSON* out = cJSON_CreateObject();
+                cJSON_AddBoolToObject(out, "ok", true);
+                cJSON_AddStringToObject(out, "cong_cu", "Serper Google Search");
+                cJSON_AddItemToObject(out, "ket_qua", arr);
+                return cjson_to_string_and_free(out);
+            }
+        } else if (bstr) {
+            cJSON_free(bstr);
+        }
+    }
+
+    // 4) SearXNG Custom Instance
+    if (eng == "searxng" && cfg.searxng_url[0] != '\0') {
+        std::string base = cfg.searxng_url;
+        while (!base.empty() && base.back() == '/') base.pop_back();
+        std::string surl = base + "/search?format=json&language=vi&q=" + url_encode(kw.c_str(), false);
+        std::string resp;
+        int st = 0;
+        if (http_get_text(surl.c_str(), resp, &st, 24576) == ESP_OK && st == 200) {
+            cJSON* root = cJSON_Parse(resp.c_str());
+            if (root) {
+                cJSON* res = cJSON_GetObjectItemCaseSensitive(root, "results");
+                cJSON* arr = cJSON_CreateArray();
+                if (cJSON_IsArray(res)) {
+                    const int n = std::min<int>(cJSON_GetArraySize(res), 3);
+                    for (int i = 0; i < n; ++i) {
+                        cJSON* r0 = cJSON_GetArrayItem(res, i);
+                        cJSON* item = cJSON_CreateObject();
+                        cJSON* jt = cJSON_GetObjectItemCaseSensitive(r0, "title");
+                        cJSON* jc = cJSON_GetObjectItemCaseSensitive(r0, "content");
+                        if (cJSON_IsString(jt)) cJSON_AddStringToObject(item, "tieu_de", jt->valuestring);
+                        if (cJSON_IsString(jc)) cJSON_AddStringToObject(item, "mo_ta", jc->valuestring);
+                        cJSON_AddItemToArray(arr, item);
+                    }
+                }
+                cJSON_Delete(root);
+                cJSON* out = cJSON_CreateObject();
+                cJSON_AddBoolToObject(out, "ok", true);
+                cJSON_AddStringToObject(out, "cong_cu", "SearXNG");
+                cJSON_AddItemToObject(out, "ket_qua", arr);
+                return cjson_to_string_and_free(out);
+            }
+        }
+    }
+
+    // 5) Mặc định miễn phí: DuckDuckGo Instant Answer + Wikipedia Tiếng Việt
+    std::string ddg_abstract;
+    {
+        std::string ddg_url = "https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=" +
+                              url_encode(kw.c_str(), false);
+        std::string dresp;
+        int dst = 0;
+        if (http_get_text(ddg_url.c_str(), dresp, &dst, 16384) == ESP_OK && dst == 200) {
+            cJSON* dj = cJSON_Parse(dresp.c_str());
+            if (dj) {
+                cJSON* ja = cJSON_GetObjectItemCaseSensitive(dj, "AbstractText");
+                if (cJSON_IsString(ja) && ja->valuestring && ja->valuestring[0]) {
+                    ddg_abstract = ja->valuestring;
+                }
+                cJSON_Delete(dj);
+            }
+        }
+    }
+
     std::string enc_title = url_encode(kw.c_str(), true);
     std::string url = "https://vi.wikipedia.org/api/rest_v1/page/summary/" + enc_title;
 
     std::string resp;
     int status = 0;
-    static constexpr const char* kWikiUA = "XiaozhiZClawVN/1.0 (https://github.com/espressif/esp-idf)";
+    static constexpr const char* kWikiUA = "SW-NiOh/1.0 (https://github.com/Neito112/esp32-Ni-Oh-s3mn)";
     http_get_text(url.c_str(), resp, &status, 16384, kWikiUA);
 
-    // Nếu không khớp chính xác tiêu đề -> thử opensearch để lấy tiêu đề đúng nhất
     if (status != 200) {
         std::string search_url =
             "https://vi.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=" +
@@ -1070,31 +1318,30 @@ std::string McpRegistry::tool_tra_cuu_thong_tin(cJSON* args) {
         }
     }
 
-    if (status != 200 || resp.empty()) {
-        return make_error_json("Không tìm thấy mục phù hợp trên Wikipedia Tiếng Việt");
+    if ((status != 200 || resp.empty()) && ddg_abstract.empty()) {
+        return make_error_json("Không tìm thấy thông tin phù hợp trên Web/Wikipedia");
     }
-
-    cJSON* root = cJSON_Parse(resp.c_str());
-    if (!root) {
-        return make_error_json("Lỗi phân tích dữ liệu Wikipedia");
-    }
-
-    const cJSON* jtitle   = cJSON_GetObjectItem(root, "title");
-    const cJSON* jdesc    = cJSON_GetObjectItem(root, "description");
-    const cJSON* jextract = cJSON_GetObjectItem(root, "extract");
 
     cJSON* out = cJSON_CreateObject();
     cJSON_AddBoolToObject(out, "ok", true);
-    cJSON_AddStringToObject(out, "tieu_de", cJSON_IsString(jtitle) ? jtitle->valuestring : kw.c_str());
-    if (cJSON_IsString(jdesc)) {
-        cJSON_AddStringToObject(out, "mo_ta_ngan", jdesc->valuestring);
+    cJSON_AddStringToObject(out, "cong_cu", "DuckDuckGo + Wikipedia VI");
+    if (!ddg_abstract.empty()) {
+        cJSON_AddStringToObject(out, "duckduckgo", ddg_abstract.c_str());
     }
-    std::string extract = cJSON_IsString(jextract) ? jextract->valuestring : "";
-    if (extract.size() > 900) {
-        extract = extract.substr(0, 900) + "...";
+    if (status == 200 && !resp.empty()) {
+        cJSON* root = cJSON_Parse(resp.c_str());
+        if (root) {
+            const cJSON* jtitle   = cJSON_GetObjectItem(root, "title");
+            const cJSON* jdesc    = cJSON_GetObjectItem(root, "description");
+            const cJSON* jextract = cJSON_GetObjectItem(root, "extract");
+            cJSON_AddStringToObject(out, "tieu_de", cJSON_IsString(jtitle) ? jtitle->valuestring : kw.c_str());
+            if (cJSON_IsString(jdesc)) cJSON_AddStringToObject(out, "mo_ta_ngan", jdesc->valuestring);
+            std::string extract = cJSON_IsString(jextract) ? jextract->valuestring : "";
+            if (extract.size() > 900) extract = extract.substr(0, 900) + "...";
+            cJSON_AddStringToObject(out, "tom_tat", extract.c_str());
+            cJSON_Delete(root);
+        }
     }
-    cJSON_AddStringToObject(out, "tom_tat", extract.c_str());
-    cJSON_Delete(root);
     return cjson_to_string_and_free(out);
 }
 
@@ -1269,22 +1516,36 @@ bool resolve_soundcloud_mp3(const char* query_or_url,
     return ok;
 }
 
-// Truy vấn Piped API công cộng tìm metadata & audio stream YouTube
-bool resolve_youtube_piped(const char* query_or_url,
+// Truy vấn danh sách Piped API cấu hình trong Dashboard để tìm metadata & audio stream YouTube
+bool resolve_youtube_piped(const ZClawConfig& cfg,
+                           const char* query_or_url,
                            std::string& out_title,
                            int& out_duration_sec,
                            std::string& out_mp3_url,
                            std::string& out_video_id) {
-    static constexpr const char* kPipedHosts[] = {
-        "https://pipedapi.kavin.rocks",
-        "https://pipedapi.tokhmi.xyz",
-        "https://pipedapi.adminforge.de",
-    };
+    std::vector<std::string> hosts;
+    if (cfg.piped_instances[0] != '\0') {
+        const char* p = cfg.piped_instances;
+        while (*p) {
+            while (*p == ' ' || *p == ',') p++;
+            const char* end = strchr(p, ',');
+            std::string h = end ? std::string(p, end - p) : std::string(p);
+            while (!h.empty() && (h.back() == ' ' || h.back() == '/')) h.pop_back();
+            if (!h.empty()) hosts.push_back(h);
+            if (!end) break;
+            p = end + 1;
+        }
+    }
+    if (hosts.empty()) {
+        hosts.push_back("https://pipedapi.kavin.rocks");
+        hosts.push_back("https://pipedapi.adminforge.de");
+        hosts.push_back("https://pipedapi.tokhmi.xyz");
+    }
 
     out_video_id = extract_youtube_id(query_or_url);
-    for (const char* host : kPipedHosts) {
+    for (const std::string& host : hosts) {
         if (out_video_id.empty()) {
-            std::string surl = std::string(host) + "/search?q=" +
+            std::string surl = host + "/search?q=" +
                                url_encode(query_or_url, false) + "&filter=music_songs";
             std::string resp;
             int st = 0;
@@ -1312,7 +1573,7 @@ bool resolve_youtube_piped(const char* query_or_url,
         }
 
         if (!out_video_id.empty()) {
-            std::string strm_url = std::string(host) + "/streams/" + out_video_id;
+            std::string strm_url = host + "/streams/" + out_video_id;
             std::string resp;
             int st = 0;
             if (http_get_text(strm_url.c_str(), resp, &st, 32768) == ESP_OK && st == 200) {
@@ -1354,6 +1615,7 @@ bool resolve_youtube_piped(const char* query_or_url,
 
 // ---------------------------------------------------------------------------
 // 5. phat_nhac_truc_tuyen(tu_khoa_hoac_url, nen_tang)
+// Mặc định LUÔN là YouTube / SoundCloud; CHỈ mở Radio VOV khi người dùng nói rõ Radio/VOV
 // ---------------------------------------------------------------------------
 std::string McpRegistry::tool_phat_nhac_truc_tuyen(cJSON* args) {
     const cJSON* j_req = cJSON_GetObjectItem(args, "tu_khoa_hoac_url");
@@ -1362,20 +1624,26 @@ std::string McpRegistry::tool_phat_nhac_truc_tuyen(cJSON* args) {
 
     const char* raw = (cJSON_IsString(j_req) && j_req->valuestring && j_req->valuestring[0])
                           ? j_req->valuestring
-                          : "vov3";
+                          : "nhac chill lo-fi";
     std::string plat = fold_vn_lower(
         (cJSON_IsString(j_plat) && j_plat->valuestring) ? j_plat->valuestring : "");
 
-    // Tự nhận diện nền tảng nếu LLM bỏ qua tham số nen_tang
+    // Chỉ mở Radio VOV nếu người dùng chỉ rõ "radio" / "vov" / "bat dai" / "kenh vov"
     std::string folded_q = fold_vn_lower(raw);
+    const bool explicit_radio =
+        (folded_q.find("vov") != std::string::npos ||
+         folded_q.find("radio") != std::string::npos ||
+         folded_q.find("bat dai") != std::string::npos ||
+         folded_q.find("kenh dai") != std::string::npos);
+
+    if (plat == "radio" && !explicit_radio) {
+        // Ngăn LLM ép nhầm bài hát bình thường thành Radio VOV
+        plat = "youtube";
+    }
     if (plat.empty()) {
         if (strstr(raw, "soundcloud.com") != nullptr) {
             plat = "soundcloud";
-        } else if (strstr(raw, "youtube.com") != nullptr || strstr(raw, "youtu.be") != nullptr) {
-            plat = "youtube";
-        } else if (folded_q.find("vov") != std::string::npos ||
-                   folded_q.find("radio") != std::string::npos ||
-                   folded_q.find("dai") != std::string::npos) {
+        } else if (explicit_radio) {
             plat = "radio";
         } else {
             plat = "youtube";
@@ -1385,7 +1653,7 @@ std::string McpRegistry::tool_phat_nhac_truc_tuyen(cJSON* args) {
     const ZClawConfig cfg = ZClawLlmClient::instance().get_config();
     std::string chosen_url;
     std::string chosen_title = raw;
-    std::string source_tag   = "[Radio]";
+    std::string source_tag   = "[YouTube]";
     std::string artist;
     int duration_sec = 0;
 
@@ -1402,12 +1670,11 @@ std::string McpRegistry::tool_phat_nhac_truc_tuyen(cJSON* args) {
             {"vov1",               "VOV1 Thời sự",          "http://media.kythuatvov.vn:7000/;stream/1"},
             {"vov2",               "VOV2 Văn hóa Xã hội",   "http://media.kythuatvov.vn:7002/;stream/1"},
             {"vov3",               "VOV3 Âm nhạc Giải trí", "http://media.kythuatvov.vn:7004/;stream/1"},
-            {"nhac",               "VOV3 Âm nhạc",          "http://media.kythuatvov.vn:7004/;stream/1"},
         };
 
         if (strncasecmp(raw, "http://", 7) == 0 || strncasecmp(raw, "https://", 8) == 0) {
             chosen_url   = raw;
-            chosen_title = "Luồng MP3 trực tuyến";
+            chosen_title = "Luồng Radio MP3";
         } else {
             for (const auto& ch : kChannels) {
                 if (folded_q.find(ch.key) != std::string::npos) {
@@ -1418,7 +1685,7 @@ std::string McpRegistry::tool_phat_nhac_truc_tuyen(cJSON* args) {
             }
             if (chosen_url.empty()) {
                 chosen_url   = kChannels[4].stream_url;
-                chosen_title = std::string("VOV3 Âm nhạc (") + raw + ")";
+                chosen_title = "VOV3 Âm nhạc";
             }
         }
     } else if (plat == "soundcloud") {
@@ -1436,22 +1703,21 @@ std::string McpRegistry::tool_phat_nhac_truc_tuyen(cJSON* args) {
             if (chosen_url.empty()) {
                 return make_error_json(
                     "Không tìm được luồng MP3 progressive từ SoundCloud. "
-                    "Vui lòng nhập SoundCloud Client ID hoặc Máy chủ Stream Proxy trong cổng cấu hình 192.168.4.1.");
+                    "Hãy kiểm tra SoundCloud Client ID hoặc Media Gateway URL trong tab Dịch vụ & Tools trên Dashboard.");
             }
         }
     } else {
-        // YouTube / YouTube Music
+        // YouTube / YouTube Music mặc định
         source_tag = "[YouTube]";
         std::string video_id;
-        resolve_youtube_piped(raw, chosen_title, duration_sec, chosen_url, video_id);
+        resolve_youtube_piped(cfg, raw, chosen_title, duration_sec, chosen_url, video_id);
         if (chosen_title.empty()) chosen_title = raw;
 
         if (cfg.media_proxy_url[0] != '\0') {
-            // Ưu tiên Media Proxy gateway trả luồng MP3 trực tiếp tương thích minimp3 100%
             const char* query_for_proxy = !video_id.empty() ? video_id.c_str() : raw;
             chosen_url = build_proxy_url(cfg.media_proxy_url, "/stream", query_for_proxy, "&source=youtube");
         } else if (chosen_url.empty()) {
-            // Fallback sang SoundCloud progressive MP3 nếu YouTube Piped không có định dạng audio/mpeg
+            // Fallback sang SoundCloud progressive MP3 nếu Piped không trả về định dạng audio/mpeg
             std::string cid = fetch_soundcloud_client_id(cfg);
             std::string sc_url, sc_title, sc_artist;
             int sc_dur = 0;
@@ -1463,8 +1729,8 @@ std::string McpRegistry::tool_phat_nhac_truc_tuyen(cJSON* args) {
                 source_tag   = "[SoundCloud]";
             } else {
                 return make_error_json(
-                    "YouTube không cung cấp luồng MP3 gốc cho minimp3 trên ESP32-S3. "
-                    "Hãy nhập Máy chủ Stream Nhạc/Video (yt-dlp/ffmpeg Proxy URL) tại http://192.168.4.1 để phát trực tiếp mọi bài YouTube.");
+                    "Không tìm thấy luồng MP3 trực tiếp từ YouTube/SoundCloud cho minimp3 trên ESP32-S3. "
+                    "Hãy nhập Custom yt-dlp / Media Gateway URL trong tab Dịch vụ & Tools trên Dashboard.");
             }
         }
     }
@@ -1500,15 +1766,15 @@ std::string McpRegistry::tool_xem_video_truc_tuyen(cJSON* args) {
         return make_error_json("Thiếu từ khóa tìm kiếm hoặc URL luồng video");
     }
 
+    const ZClawConfig cfg = ZClawLlmClient::instance().get_config();
     const cJSON* j_res = cJSON_GetObjectItem(args, "do_phan_giai");
-    std::string res = (cJSON_IsString(j_res) && j_res->valuestring &&
-                       strcmp(j_res->valuestring, "240x180") == 0)
-                          ? "240x180"
-                          : "240x240";
+    std::string res = cfg.video_res[0] ? cfg.video_res : "240x240";
+    if (cJSON_IsString(j_res) && j_res->valuestring &&
+        (strcmp(j_res->valuestring, "240x180") == 0 || strcmp(j_res->valuestring, "240x240") == 0)) {
+        res = j_res->valuestring;
+    }
 
     const char* raw = j_val->valuestring;
-    const ZClawConfig cfg = ZClawLlmClient::instance().get_config();
-
     std::string stream_url;
     std::string display_title = raw;
     std::string source_tag    = "[Video]";
@@ -1517,26 +1783,29 @@ std::string McpRegistry::tool_xem_video_truc_tuyen(cJSON* args) {
     const bool is_yt_url = is_http && (strstr(raw, "youtube.com") != nullptr || strstr(raw, "youtu.be") != nullptr);
 
     if (is_http && !is_yt_url) {
-        // Đường dẫn luồng MJPEG / camera trực tiếp -> phát thẳng lên ST7789
         stream_url = raw;
     } else {
         if (cfg.media_proxy_url[0] == '\0') {
             return make_error_json(
                 "Chưa cấu hình Máy chủ Stream Video (Media Proxy URL). "
-                "Vui lòng vào Web Portal 192.168.4.1 nhập server MJPEG Proxy (yt-dlp + ffmpeg 240x240) hoặc truyền trực tiếp URL luồng MJPEG.");
+                "Vui lòng vào Dashboard -> Dịch vụ & Tools nhập server MJPEG Proxy hoặc truyền trực tiếp URL luồng MJPEG.");
         }
 
         source_tag = "[YouTube]";
         std::string piped_title, piped_mp3, piped_vid;
         int piped_dur = 0;
-        resolve_youtube_piped(raw, piped_title, piped_dur, piped_mp3, piped_vid);
+        resolve_youtube_piped(cfg, raw, piped_title, piped_dur, piped_mp3, piped_vid);
         if (!piped_title.empty()) {
             display_title = piped_title;
         }
 
         const char* q_arg = !piped_vid.empty() ? piped_vid.c_str() : raw;
-        std::string extra = "&source=youtube&res=" + res;
-        stream_url = build_proxy_url(cfg.media_proxy_url, "/video", q_arg, extra.c_str());
+        char vqs[96];
+        snprintf(vqs, sizeof(vqs), "&source=youtube&res=%s&fps=%u&qlt=%u",
+                 res.c_str(),
+                 static_cast<unsigned>(cfg.video_fps ? cfg.video_fps : 12),
+                 static_cast<unsigned>(cfg.video_jpeg_quality ? cfg.video_jpeg_quality : 75));
+        stream_url = build_proxy_url(cfg.media_proxy_url, "/video", q_arg, vqs);
     }
 
     ZClawLlmClient::instance().schedule_media_playback(
@@ -1707,7 +1976,8 @@ void McpRegistry::pomodoro_worker_task(void* arg) {
             ChronosNotification notif = {};
             snprintf(notif.app_name, sizeof(notif.app_name), "Pomodoro");
             snprintf(notif.title, sizeof(notif.title), "Hết giờ rồi!");
-            snprintf(notif.body, sizeof(notif.body), "%s", ev.reminder);
+            snprintf(notif.body, sizeof(notif.body), "%.*s",
+                     static_cast<int>(sizeof(notif.body) - 1), ev.reminder);
             notif.unread = true;
             UiEyesClock::instance().show_notification(notif);
 

@@ -2,7 +2,7 @@
 
 /*
  * vn_fonts.h — Vietnamese font declarations for LVGL v8.4
- * Project: Xiaozhi-VN ZClaw Edition (ESP32-S3, ESP-IDF v5.x)
+ * Project: S.W.Ni-Oh (ESP32-S3, ESP-IDF v5.x)
  *
  * Glyph ranges included in vn_font_16:
  *   0x0020–0x007E  Basic Latin (ASCII printable)

@@ -2,7 +2,7 @@
 
 /**
  * @file mcp_vietnam_tools.h
- * @brief Vietnamese Native MCP Registry — 10 công cụ MCP 100% Tiếng Việt cho ZClaw
+ * @brief Vietnamese Native MCP Registry — 10 công cụ MCP 100% Tiếng Việt cho S.W.Ni-Oh
  */
 
 #include <atomic>

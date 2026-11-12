@@ -100,14 +100,12 @@ private:
     UiEyesClock(const UiEyesClock&) = delete;
     UiEyesClock& operator=(const UiEyesClock&) = delete;
 
-    // --- Màn hình Chat (Mắt + Nhạc Banner + Sóng âm) ---
+    // --- Màn hình Chat (Mắt vector bo góc thuần túy, không dùng mí đen che đè + Nhạc Banner + Sóng âm) ---
     lv_obj_t* scr_chat_          = nullptr;
     lv_obj_t* eye_left_          = nullptr;
     lv_obj_t* eye_right_         = nullptr;
-    lv_obj_t* eyelid_top_left_   = nullptr;
-    lv_obj_t* eyelid_bot_left_   = nullptr;
-    lv_obj_t* eyelid_top_right_  = nullptr;
-    lv_obj_t* eyelid_bot_right_  = nullptr;
+    lv_obj_t* eye_happy_left_    = nullptr;
+    lv_obj_t* eye_happy_right_   = nullptr;
     lv_obj_t* music_banner_      = nullptr;
     lv_obj_t* lbl_music_title_   = nullptr;
     lv_obj_t* wave_bars_[11]     = {};

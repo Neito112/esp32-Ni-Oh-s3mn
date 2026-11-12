@@ -1,6 +1,6 @@
 /*
  * vn_font_16.c — Vietnamese font wrapper for LVGL v8.4
- * Project: Xiaozhi-VN ZClaw Edition (ESP32-S3, ESP-IDF v5.x)
+ * Project: S.W.Ni-Oh (ESP32-S3, ESP-IDF v5.x)
  *
  * This file is a COMPILE-READY fallback that wraps the LVGL built-in
  * lv_font_montserrat_16.  When a Vietnamese codepoint is requested

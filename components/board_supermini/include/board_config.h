@@ -2,7 +2,7 @@
 
 /**
  * @file board_config.h
- * @brief Cấu hình phần cứng cố định cho Xiaozhi-VN ZClaw Edition
+ * @brief Cấu hình phần cứng cố định cho S.W.Ni-Oh
  *        Bo mạch: ESP32-S3 SuperMini (4MB Flash, Dynamic PSRAM detection)
  *
  * CẢNH BÁO: Chân GPIO được hàn cố định trên bo mạch, tuyệt đối không tự ý thay đổi.

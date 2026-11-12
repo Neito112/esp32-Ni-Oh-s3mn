@@ -85,7 +85,8 @@ esp_err_t AudioHal::init()
         return ESP_ERR_NO_MEM;
     }
 
-    // Nạp volume & mic_gain từ NVS nếu đã từng lưu
+    // Nạp volume & mic_gain từ NVS nếu đã từng lưu (luôn đảm bảo bật tiếng khi khởi tạo)
+    muted_.store(false, std::memory_order_relaxed);
     load_nvs_settings();
 
     // BẮT BUỘC: Giải phóng GPIO 44 khỏi UART0 RX trước khi mở I2S_NUM_1
@@ -958,7 +959,7 @@ void AudioHal::load_nvs_settings()
         return;
     }
 
-    uint8_t saved_vol = 75;
+    uint8_t saved_vol = 85;
     if (nvs_get_u8(handle, kNvsKeyVolume, &saved_vol) == ESP_OK) {
         speaker_volume_.store(std::min<uint8_t>(saved_vol, 100), std::memory_order_relaxed);
     }

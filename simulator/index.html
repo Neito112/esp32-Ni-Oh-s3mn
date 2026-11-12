@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>S.W.Ni-Oh — ESP-Claw Simulator (ESP32-S3 ST7789 240x240)</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div>
+        <h1>S.W.Ni-Oh &middot; ESP-Claw Console</h1>
+        <span>ESP32-S3 SuperMini 4MB &bull; Multi-Provider LLM &bull; I2S1 MAX98357A (GPIO44) &bull; ST7789 240&times;240</span>
+      </div>
+    </div>
+    <div class="status-pills">
+      <div id="pillFsm" class="pill active">FSM: IDLE</div>
+      <div id="pillScreen" class="pill">Màn hình: Mắt &amp; Sóng âm</div>
+      <div id="pillMic" class="pill">Mic PC: Chờ</div>
+      <div id="pillBle" class="pill active">BLE: S.W.Ni-Oh (Advertising)</div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Cột trái: Thiết bị ảo ESP32-S3 + ST7789 240x240 + 3 Nút vật lý + Mic/Chat -->
+    <section class="device-col">
+      <div class="bezel-wrap">
+        <div class="bezel-header">
+          <span>ST7789 1.54" 240&times;240 (SPI3 Mode 3)</span>
+          <span id="lblIdleCountdown">Dashboard sau: 5.0s</span>
+        </div>
+
+        <div class="lcd-frame">
+          <div id="lcdViewport" class="lcd-viewport">
+            <canvas id="st7789Canvas" width="240" height="240"></canvas>
+            <div id="mjpegOverlay">
+              <img id="mjpegImg" alt="MJPEG Stream">
+              <div id="mjpegTitleBar">Video S.W.Ni-Oh</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hw-buttons">
+          <button id="btnMain" class="hw-btn" title="Phím Space">
+            BTN_MAIN
+            <small>GPIO 3 (Space)</small>
+          </button>
+          <button id="btnVolUp" class="hw-btn" title="Phím Mũi tên lên / +">
+            VOL +
+            <small>GPIO 4 (&uarr;)</small>
+          </button>
+          <button id="btnVolDown" class="hw-btn" title="Phím Mũi tên xuống / -">
+            VOL &minus;
+            <small>GPIO 5 (&darr;)</small>
+          </button>
+        </div>
+
+        <div class="btn-hold-meter" title="Thanh giữ nút BTN_MAIN (1.6s Reset | 5.0s Portal)">
+          <div id="btnHoldFill" class="btn-hold-fill"></div>
+        </div>
+        <div style="width:100%;display:flex;justify-content:space-between;font-size:10px;color:var(--text-secondary);margin-top:4px;">
+          <span>Nhấn (&lt;1.6s): Nói / Dừng Media</span>
+          <span>1.6s: Reset | 5s: Portal</span>
+        </div>
+
+        <div class="pinout-grid">
+          <div class="pin-box"><b>LCD:</b> MOSI=9 SCK=10 DC=7 RST=8 BLK=6</div>
+          <div class="pin-box"><b>Audio:</b> MIC(11/12/13) | I2S1(1/2/44)</div>
+        </div>
+      </div>
+
+      <div class="card voice-controls">
+        <div class="row-gap" style="flex-wrap:wrap;">
+          <button id="btnToggleMic" class="primary">Bật Mic PC (VAD)</button>
+          <button id="btnSwitchScreen" class="secondary">Đổi Mắt / Đồng hồ</button>
+          <button id="btnTestTts" class="secondary">Thử Loa TTS</button>
+          <button id="btnStopMedia" class="danger">Dừng Media</button>
+        </div>
+
+        <div class="emotion-strip" id="emotionStrip">
+          <button class="emo-btn active" data-emo="binh_thuong">binh_thuong</button>
+          <button class="emo-btn" data-emo="dang_nghe">dang_nghe</button>
+          <button class="emo-btn" data-emo="suy_nghi">suy_nghi</button>
+          <button class="emo-btn" data-emo="vui_ve">vui_ve</button>
+          <button class="emo-btn" data-emo="ngac_nhien">ngac_nhien</button>
+          <button class="emo-btn" data-emo="buon">buon</button>
+          <button class="emo-btn" data-emo="ngu_gat">ngu_gat</button>
+        </div>
+
+        <div id="chatBox" class="chat-box">
+          <div class="msg sys">S.W.Ni-Oh Simulator sẵn sàng. Click bất kỳ đâu để kích hoạt âm thanh loa PC, nhấn Space hoặc gõ tin nhắn!</div>
+        </div>
+
+        <form id="chatForm" class="row-gap">
+          <input id="chatInput" type="text" placeholder="Hỏi S.W.Ni-Oh (VD: Thời tiết Hà Nội, Mở nhạc Sơn Tùng, Tra cứu AI...)">
+          <button class="primary" type="submit" style="white-space:nowrap;">Gửi</button>
+        </form>
+        <audio id="simAudio" crossorigin="anonymous" style="display:none;"></audio>
+      </div>
+    </section>
+
+    <!-- Cột phải: Bảng điều khiển Port 1:1 từ ESP-Claw -->
+    <section class="card">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="tabConfig">LLM Multi-Provider (ESP-Claw)</button>
+        <button class="tab-btn" data-tab="tabServices">Media &amp; Tools (S3Mini I2S1)</button>
+        <button class="tab-btn" data-tab="tabBleChronos">BLE Chronos (Đồng hồ &amp; AVRCP)</button>
+        <button class="tab-btn" data-tab="tabMonitor">Serial Monitor &amp; sw_nioh.bin</button>
+      </div>
+
+      <!-- TAB 1: LLM Configuration (Port 1:1 từ esp-claw LlmPage.tsx + Auto-Pick Model từ Key + Fallback 429) -->
+      <div id="tabConfig" class="tab-pane active">
+        <div class="row-gap" style="margin-bottom:10px;flex-wrap:wrap;justify-content:space-between;">
+          <div class="row-gap">
+            <select id="profileSelect" style="width:205px;"></select>
+            <button id="btnAddProfile" type="button" class="secondary">+ Thêm Fallback Key</button>
+            <button id="btnDelProfile" type="button" class="danger">Xóa</button>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);cursor:pointer;">
+            <input id="cfgAutoFallback" type="checkbox" style="width:auto;" checked>
+            Auto-Fallback 429
+          </label>
+        </div>
+
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">Fill Default Config (bấm chọn nhanh hoặc dán thẳng API Key bên dưới):</div>
+        <div id="presetButtons" class="row-gap" style="flex-wrap:wrap;gap:6px;margin-bottom:14px;"></div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label>API Key (tự nhận diện Provider &amp; chọn Model phù hợp khi dán)</label>
+            <input id="profApiKey" type="password" placeholder="Dán API Key (gsk_..., AIza..., sk-or-..., sk-ant-..., sk-...)">
+          </div>
+          <div class="field">
+            <label>Model (tự động chọn từ Key hoặc nhập/chọn bất kỳ)</label>
+            <input id="profModel" type="text" list="modelDatalist" placeholder="Tự động điền từ Key hoặc chọn Preset">
+            <datalist id="modelDatalist"></datalist>
+          </div>
+        </div>
+
+        <div class="row-gap" style="margin-top:10px;flex-wrap:wrap;">
+          <button id="btnFetchModels" type="button" class="secondary">Tự chọn Model từ Key (/models)</button>
+          <button id="btnTestLlm" type="button" class="secondary">Test Kết Nối (Ping LLM)</button>
+          <button id="btnSaveAllConfig" type="button" class="primary" style="margin-left:auto;">Save</button>
+        </div>
+
+        <details id="llmAdvancedBox" class="adv-block">
+          <summary>LLM Advanced Options (Base URL, Auth Type, Fallback Role)</summary>
+          <div class="form-grid" style="margin-top:10px;">
+            <div class="field">
+              <label>Profile Name</label>
+              <input id="profName" type="text" placeholder="Primary / Fallback">
+            </div>
+            <div class="field">
+              <label>Connection Provider</label>
+              <select id="profProvider">
+                <option value="openai">OpenAI</option>
+                <option value="bailian">Alibaba Bailian (Qwen)</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="kimi_global">Kimi (Global)</option>
+                <option value="kimi_cn">Kimi (CN)</option>
+                <option value="minimax_global">MiniMax (Global)</option>
+                <option value="minimax_cn">MiniMax (CN)</option>
+                <option value="groq">Groq</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="gemini">Google Gemini (OpenAI)</option>
+                <option value="gemini_native">Google Gemini (Native)</option>
+                <option value="ollama">Local Ollama / vLLM</option>
+                <option value="openai_compatible">OpenAI Compatible API</option>
+                <option value="anthropic_compatible">Anthropic Compatible API</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+            <div class="field full">
+              <label>Base URL</label>
+              <div class="row-gap">
+                <input id="profBaseUrl" type="text" style="flex:1;" placeholder="https://api.openai.com/v1">
+                <label style="display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px;">
+                  <input id="profRawEndpoint" type="checkbox" style="width:auto;"> Raw Full Endpoint
+                </label>
+              </div>
+            </div>
+            <div class="field">
+              <label>Auth Type</label>
+              <select id="profAuthScheme">
+                <option value="bearer">bearer</option>
+                <option value="x-api-key">x-api-key (api-key)</option>
+                <option value="x-goog-api-key">x-goog-api-key</option>
+                <option value="custom_header">custom_header</option>
+                <option value="query_param">query_param</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Custom Header / Param Name</label>
+              <input id="profCustomAuth" type="text" placeholder="X-Proxy-Key hoặc api_key">
+            </div>
+            <div class="field full row-gap">
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;margin:0;cursor:pointer;">
+                <input id="profSetPrimary" type="checkbox" style="width:auto;"> Primary (Chính)
+              </label>
+              <label style="display:flex;align-items:center;gap:5px;font-size:12px;margin:0;cursor:pointer;">
+                <input id="profEnabled" type="checkbox" style="width:auto;" checked> Cho phép Fallback 429
+              </label>
+            </div>
+          </div>
+        </details>
+
+        <pre id="llmTestResult" class="json-out" style="margin-top:10px;">Chỉ cần chọn nhanh Provider hoặc dán thẳng API Key vào ô API Key &mdash; hệ thống sẽ tự nhận diện và chọn Model phù hợp nhất.</pre>
+      </div>
+
+      <!-- TAB 2: Media & Tools Trực tiếp trên S3Mini (I2S1 MAX98357A GPIO44 + minimp3 + ST7789) -->
+      <div id="tabServices" class="tab-pane">
+        <div class="section-title" style="margin-top:0;">1. Web Search Engine (tra_cuu_thong_tin)</div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Search Provider</label>
+            <select id="cfgSearchEngine">
+              <option value="ddg_wiki">DuckDuckGo + Wikipedia Tiếng Việt (Miễn phí)</option>
+              <option value="tavily">Tavily AI Search (Cần API Key)</option>
+              <option value="brave">Brave Search API (Cần API Key)</option>
+              <option value="serper">Serper.dev Google Search (Cần API Key)</option>
+              <option value="bocha">Bocha Search (ESP-Claw Standard)</option>
+              <option value="searxng">SearXNG Custom Instance URL</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Search API Key (Tavily / Brave / Serper / Bocha)</label>
+            <input id="cfgSearchKey" type="password" placeholder="Để trống nếu dùng DuckDuckGo">
+          </div>
+          <div class="field full">
+            <label>SearXNG Custom Instance URL</label>
+            <input id="cfgSearxngUrl" type="text" placeholder="https://searx.example.com">
+          </div>
+        </div>
+
+        <div class="section-title">2. YouTube / SoundCloud Proxy &amp; Video MJPEG 240&times;240 (Chạy trực tiếp trên S3Mini)</div>
+        <div class="form-grid">
+          <div class="field full">
+            <label>Piped / Invidious Public API Instances (hoặc để mặc định) &mdash; Radio VOV chỉ mở khi nói rõ</label>
+            <input id="cfgPipedInstances" type="text">
+          </div>
+          <div class="field">
+            <label>Custom YouTube / SoundCloud Media Stream Proxy URL</label>
+            <input id="cfgMediaProxy" type="text" placeholder="VD: http://127.0.0.1:8080 (tự động nếu trống)">
+          </div>
+          <div class="field">
+            <label>SoundCloud Client ID (Trống = tự động dò)</label>
+            <input id="cfgScCid" type="text" placeholder="Tự động cạo nếu để trống">
+          </div>
+          <div class="field">
+            <label>Video MJPEG ST7789 Resolution</label>
+            <select id="cfgVideoRes">
+              <option value="240x240">240x240 Square Crop</option>
+              <option value="240x180">240x180 Letterbox</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Video FPS &amp; Chất lượng JPEG</label>
+            <div class="row-gap">
+              <select id="cfgVideoFps">
+                <option value="12">12 FPS</option>
+                <option value="15">15 FPS</option>
+                <option value="20">20 FPS</option>
+              </select>
+              <input id="cfgVideoQuality" type="number" min="40" max="90" value="75" title="JPEG Quality 40-90">
+            </div>
+          </div>
+        </div>
+
+        <div class="section-title">3. Thực thi Media &amp; Tools Trực Tiếp trên S3Mini (I2S_NUM_1 GPIO44 / minimp3 / ST7789)</div>
+        <div class="mcp-grid">
+          <div class="mcp-card">
+            <h4>Phát Nhạc YouTube / SoundCloud</h4>
+            <p>Mạch tự tải MP3, giải mã <code>minimp3</code> trên RAM phát thẳng ra MAX98357A (<code>I2S1 GPIO 44</code>) + 11 dải sóng âm.</p>
+            <div class="row-gap">
+              <input id="mcpMusicQ" type="text" value="Lạc Trôi Sơn Tùng M-TP">
+              <select id="mcpMusicPlat" style="width:115px;">
+                <option value="youtube">YouTube</option>
+                <option value="soundcloud">SoundCloud</option>
+                <option value="radio">Radio VOV</option>
+              </select>
+            </div>
+            <button class="primary" type="button" onclick="window.runMcpTest('phat_nhac_truc_tuyen',{tu_khoa_hoac_url:document.getElementById('mcpMusicQ').value,nen_tang:document.getElementById('mcpMusicPlat').value})">Phát ngay ra Loa S3Mini / PC</button>
+          </div>
+          <div class="mcp-card">
+            <h4>Xem Video MJPEG 240&times;240</h4>
+            <p>Stream MJPEG trực tiếp lên màn hình ST7789 SPI3 240&times;240 + giải mã audio đi kèm qua I2S1.</p>
+            <div class="row-gap">
+              <input id="mcpVideoQ" type="text" value="S.W.Ni-Oh Stream">
+              <select id="mcpVideoRes" style="width:105px;">
+                <option value="240x240">240x240</option>
+                <option value="240x180">240x180</option>
+              </select>
+            </div>
+            <button class="secondary" type="button" onclick="window.runMcpTest('xem_video_truc_tuyen',{tu_khoa_hoac_url:document.getElementById('mcpVideoQ').value,do_phan_giai:document.getElementById('mcpVideoRes').value})">Chiếu lên ST7789 240&times;240</button>
+          </div>
+          <div class="mcp-card">
+            <h4>Tìm kiếm Web &amp; Thời tiết</h4>
+            <div class="row-gap" style="flex-wrap:wrap;">
+              <button class="secondary" type="button" onclick="window.runMcpTest('tra_cuu_thong_tin',{tu_khoa:'ESP32-S3'})">Search: ESP32-S3</button>
+              <button class="secondary" type="button" onclick="window.runMcpTest('xem_thoi_tiet',{dia_diem:'Hà Nội'})">Thời tiết Hà Nội</button>
+              <button class="secondary" type="button" onclick="window.runMcpTest('xem_thoi_gian_lich_am',{})">Âm lịch</button>
+            </div>
+          </div>
+          <div class="mcp-card">
+            <h4>ESP-NOW 2 chiều (Magic 0x5A43)</h4>
+            <div class="row-gap">
+              <input id="espnowPayload" type="text" value="Cảnh báo mở cửa phòng khách!">
+              <button class="secondary" type="button" id="btnEspNowRx">Nhận ALERT</button>
+            </div>
+          </div>
+        </div>
+        <pre id="mcpJsonOut" class="json-out" style="margin-top:10px;">Kết quả thực thi Media / MCP Tool của S3Mini sẽ hiển thị tại đây.</pre>
+
+        <div class="section-title">4. STT, TTS Tiếng Việt &amp; Phần cứng I2S1 / ST7789</div>
+        <div class="form-grid">
+          <div class="field full">
+            <label>Groq / OpenAI STT API Key (Nếu trống tự lấy key Groq trong LLM Profiles)</label>
+            <input id="cfgSttKey" type="password" placeholder="gsk_...">
+          </div>
+          <div class="field">
+            <label>Giọng đọc TTS Tiếng Việt</label>
+            <select id="cfgTtsVoice">
+              <option value="vi-VN-HoaiMyNeural">vi-VN-HoaiMyNeural (Hoài My - Nữ)</option>
+              <option value="vi-VN-NamMinhNeural">vi-VN-NamMinhNeural (Nam Minh - Nam)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Chế độ TTS</label>
+            <select id="cfgTtsGoogle">
+              <option value="false">Microsoft Edge TTS + Google fallback</option>
+              <option value="true">Google Translate TTS trực tiếp</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Âm lượng I2S1 MAX98357A (%) &amp; Đèn nền LCD (%)</label>
+            <div class="row-gap">
+              <input id="cfgVolume" type="number" min="0" max="100" value="85">
+              <input id="cfgBacklight" type="number" min="5" max="100" value="85">
+            </div>
+          </div>
+          <div class="field">
+            <label>Xoay LCD ST7789 &amp; Độ nhạy Mic</label>
+            <div class="row-gap">
+              <select id="cfgRotation">
+                <option value="0">0&deg;</option>
+                <option value="90">90&deg;</option>
+                <option value="180">180&deg;</option>
+                <option value="270">270&deg;</option>
+              </select>
+              <input id="cfgMicGain" type="number" min="1" max="10" value="6">
+            </div>
+          </div>
+        </div>
+
+        <div class="row-gap" style="margin-top:12px;">
+          <button id="btnSaveServices" type="button" class="primary" style="flex:1;">Lưu Cấu hình Media, Tools &amp; Phần cứng</button>
+        </div>
+      </div>
+
+      <!-- TAB 3: BLE Chronos (Chỉ giữ Đồng hồ, Thông báo, Maps & AVRCP Remote — Tách bạch Media) -->
+      <div id="tabBleChronos" class="tab-pane">
+        <div class="section-title" style="margin-top:0;">BLE Chronos Auto-Sync (Đồng hồ, Thông báo, Maps &amp; Pin ĐT)</div>
+        <div class="mcp-card" style="margin-bottom:12px;">
+          <div class="row-gap" style="justify-content:space-between;flex-wrap:wrap;">
+            <button id="btnChronosAutoSim" type="button" class="primary">Mô phỏng Điện thoại Chronos đang kết nối (Auto-Sync)</button>
+            <button id="btnWebBleConnect" type="button" class="secondary">Kết nối Web Bluetooth thật ("S.W.Ni-Oh")</button>
+          </div>
+          <p style="margin-top:6px;">Mạch tự động quảng bá BLE <b>"S.W.Ni-Oh"</b> và lắng nghe thụ động App Chronos (Giờ <b>0x93</b>, Thời tiết <b>0x88</b>, Thông báo <b>0x72</b>, Google Maps <b>0xEF</b>, Pin <b>0x91</b>). Phát nhạc &amp; Video do chính S3Mini tự chạy độc lập ở Tab <b>Media &amp; Tools</b>.</p>
+          <pre id="chronosStatusBox" class="json-out" style="margin-top:6px;"></pre>
+        </div>
+
+        <div class="section-title">Điều khiển phụ AVRCP qua BLE NUS (Gửi lệnh điều khiển điện thoại)</div>
+        <div class="mcp-card">
+          <p>Tính năng điều khiển phụ AVRCP từ điện thoại / đồng hồ (BLE Packet <code>0xE0</code>): Play/Pause, Next, Previous.</p>
+          <div class="row-gap" style="flex-wrap:wrap;margin-top:4px;">
+            <button id="btnAvrcpPrev" type="button" class="secondary">&laquo; Bài trước (AVRCP Prev)</button>
+            <button id="btnAvrcpPlay" type="button" class="primary">&#9654; / &#10074;&#10074; Phát / Tạm dừng (AVRCP)</button>
+            <button id="btnAvrcpNext" type="button" class="secondary">Bài tiếp (AVRCP Next) &raquo;</button>
+          </div>
+          <pre id="avrcpOut" class="json-out" style="margin-top:6px;">Sẵn sàng gửi lệnh AVRCP phụ qua BLE.</pre>
+        </div>
+      </div>
+
+      <!-- TAB 4: USB Serial/JTAG Monitor & Firmware Inspector -->
+      <div id="tabMonitor" class="tab-pane">
+        <div class="row-gap" style="justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:13px;font-weight:700;color:var(--cyan);">USB Serial / JTAG Monitor (GPIO 19/20)</span>
+          <button id="btnClearSerial" class="secondary" type="button">Xóa Log</button>
+        </div>
+        <div id="serialConsole" class="serial-console"></div>
+
+        <div class="section-title">
+          Kiểm tra Firmware `sw_nioh.bin` &amp; Phân vùng 4MB (`partitions.csv`)
+          <button id="btnRefreshFw" class="secondary" type="button" style="float:right;padding:3px 10px;">Kiểm tra lại</button>
+        </div>
+        <div id="fwInspectorBox">Đang kiểm tra tệp biên dịch...</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/sim_engine.js"></script>
+</body>
+</html>

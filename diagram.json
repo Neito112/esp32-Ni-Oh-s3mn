@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "author": "S.W.Ni-Oh",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-s3-devkitc-1",
+      "id": "esp",
+      "top": 40,
+      "left": -120,
+      "attrs": {
+        "flashSize": "4",
+        "psram": "2"
+      }
+    },
+    {
+      "type": "wokwi-ili9341",
+      "id": "st7789_240x240",
+      "top": -40,
+      "left": 180,
+      "attrs": {
+        "label": "ST7789 1.54\" 240x240 (SPI3 Mode3, CS=GND)"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_main",
+      "top": 250,
+      "left": 180,
+      "attrs": {
+        "color": "blue",
+        "label": "BTN_MAIN (GPIO3)",
+        "bounce": "0"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_vol_up",
+      "top": 250,
+      "left": 290,
+      "attrs": {
+        "color": "green",
+        "label": "VOL+ (GPIO4)",
+        "bounce": "0"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_vol_down",
+      "top": 250,
+      "left": 400,
+      "attrs": {
+        "color": "yellow",
+        "label": "VOL- (GPIO5)",
+        "bounce": "0"
+      }
+    },
+    {
+      "type": "wokwi-logic-analyzer",
+      "id": "i2s_audio_bus",
+      "top": -40,
+      "left": -430,
+      "attrs": {
+        "bufferSize": "4096"
+      }
+    }
+  ],
+  "connections": [
+    [ "st7789_240x240:VCC", "esp:3V3", "red", [ "v0" ] ],
+    [ "st7789_240x240:GND", "esp:GND.1", "black", [ "v0" ] ],
+    [ "st7789_240x240:CS", "esp:GND.1", "black", [ "h-12", "v120" ] ],
+    [ "st7789_240x240:MOSI", "esp:9", "cyan", [ "v0" ] ],
+    [ "st7789_240x240:SCK", "esp:10", "blue", [ "v0" ] ],
+    [ "st7789_240x240:DC", "esp:7", "orange", [ "v0" ] ],
+    [ "st7789_240x240:RST", "esp:8", "purple", [ "v0" ] ],
+    [ "st7789_240x240:LED", "esp:6", "yellow", [ "v0" ] ],
+
+    [ "btn_main:1.l", "esp:3", "blue", [ "h0" ] ],
+    [ "btn_main:2.l", "esp:GND.2", "black", [ "h0" ] ],
+    [ "btn_vol_up:1.l", "esp:4", "green", [ "h0" ] ],
+    [ "btn_vol_up:2.l", "esp:GND.2", "black", [ "h0" ] ],
+    [ "btn_vol_down:1.l", "esp:5", "yellow", [ "h0" ] ],
+    [ "btn_vol_down:2.l", "esp:GND.2", "black", [ "h0" ] ],
+
+    [ "i2s_audio_bus:GND", "esp:GND.1", "black", [ "h0" ] ],
+    [ "i2s_audio_bus:D0", "esp:11", "gold", [ "h0" ] ],
+    [ "i2s_audio_bus:D1", "esp:12", "green", [ "h0" ] ],
+    [ "i2s_audio_bus:D2", "esp:13", "blue", [ "h0" ] ],
+    [ "i2s_audio_bus:D3", "esp:1", "red", [ "h0" ] ],
+    [ "i2s_audio_bus:D4", "esp:2", "orange", [ "h0" ] ],
+    [ "i2s_audio_bus:D5", "esp:44", "violet", [ "h0" ] ]
+  ],
+  "serialMonitor": {
+    "display": "always",
+    "newline": "lf"
+  },
+  "dependencies": {}
+}
+

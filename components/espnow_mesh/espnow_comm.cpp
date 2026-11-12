@@ -1,5 +1,5 @@
 // espnow_comm.cpp
-// Xiaozhi-VN ZClaw Edition — ESP-NOW 2 chiều song song Wi-Fi & BLE (ESP-IDF v5.x)
+// S.W.Ni-Oh — ESP-NOW 2 chiều song song Wi-Fi & BLE (ESP-IDF v5.x)
 // Production-ready C++17 implementation — no TODOs, no pseudo-code.
 
 #include "espnow_comm.h"
@@ -385,7 +385,8 @@ void EspNowMeshManager::handle_received_packet(const uint8_t* sender_mac, const 
             ChronosNotification notif = {};
             snprintf(notif.app_name, sizeof(notif.app_name), "Cảnh báo ESP-NOW");
             snprintf(notif.title, sizeof(notif.title), "Node %s", sender_str);
-            snprintf(notif.body, sizeof(notif.body), "%s",
+            snprintf(notif.body, sizeof(notif.body), "%.*s",
+                     static_cast<int>(sizeof(notif.body) - 1),
                      pkt.payload[0] ? pkt.payload : "Phát hiện tín hiệu khẩn!");
             notif.unread = true;
             UiEyesClock::instance().show_notification(notif);
@@ -431,7 +432,8 @@ void EspNowMeshManager::handle_received_packet(const uint8_t* sender_mac, const 
             ChronosNotification notif = {};
             snprintf(notif.app_name, sizeof(notif.app_name), "ESP-NOW");
             snprintf(notif.title, sizeof(notif.title), "%s", sender_str);
-            snprintf(notif.body, sizeof(notif.body), "%s", pkt.payload);
+            snprintf(notif.body, sizeof(notif.body), "%.*s",
+                     static_cast<int>(sizeof(notif.body) - 1), pkt.payload);
             notif.unread = true;
             UiEyesClock::instance().show_notification(notif);
             break;

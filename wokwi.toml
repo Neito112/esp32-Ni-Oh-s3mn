@@ -1,0 +1,6 @@
+[wokwi]
+version = 1
+firmware = "build/sw_nioh.bin"
+elf = "build/sw_nioh.elf"
+rfc2217ServerPort = 4000
+
