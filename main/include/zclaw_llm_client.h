@@ -2,8 +2,8 @@
 
 /**
  * @file zclaw_llm_client.h
- * @brief Direct LLM / Free Cloud STT / Free Cloud TTS / Web Captive Portal Tiếng Việt
- *        Loại bỏ hoàn toàn server xiaozhi.me, hoạt động trực tiếp kiểu ZClaw / ESP-Claw.
+ * @brief Direct LLM / Free Cloud STT / Free Cloud TTS / Media Streamer (MP3 & MJPEG)
+ *        + Web Captive Portal Tiếng Việt. Loại bỏ hoàn toàn server xiaozhi.me.
  */
 
 #include <atomic>
@@ -21,15 +21,30 @@
 
 namespace zclaw {
 
+enum class MediaKind : uint8_t {
+    NONE = 0,
+    AUDIO_MP3,
+    VIDEO_MJPEG,
+};
+
+struct PendingMedia {
+    MediaKind   kind = MediaKind::NONE;
+    std::string url;
+    std::string source_tag; // "[YouTube]", "[SoundCloud]", "[Radio]", "[Video]"
+    std::string title;
+};
+
 struct ZClawConfig {
     char wifi_ssid[33];
     char wifi_pass[65];
-    char stt_api_key[160];   // Groq Whisper / OpenAI STT key (nếu trống dùng llm_api_key)
+    char stt_api_key[160];       // Groq Whisper / OpenAI STT key (nếu trống dùng llm_api_key)
     char llm_api_key[160];
-    char llm_base_url[192];  // VD: https://api.groq.com/openai/v1/chat/completions
-    char llm_model[64];      // VD: llama-3.3-70b-versatile
-    char tts_voice[48];      // vi-VN-HoaiMyNeural hoặc vi-VN-NamMinhNeural
-    bool tts_prefer_google;  // false = thử Edge TTS trước rồi fallback Google TTS
+    char llm_base_url[192];      // VD: https://api.groq.com/openai/v1/chat/completions
+    char llm_model[64];          // VD: llama-3.3-70b-versatile
+    char tts_voice[48];          // vi-VN-HoaiMyNeural hoặc vi-VN-NamMinhNeural
+    bool tts_prefer_google;      // false = thử Edge TTS trước rồi fallback Google TTS
+    char media_proxy_url[192];   // Custom Media Gateway (yt-dlp/ffmpeg) cho YouTube/SoundCloud/MJPEG
+    char soundcloud_client_id[64]; // SoundCloud client_id (tùy chọn)
 };
 
 class ZClawLlmClient {
@@ -62,14 +77,33 @@ public:
     void clear_history();
     void set_reasoning_mode(bool enabled) { next_turn_deep_reasoning_.store(enabled); }
 
-    // --- Free Cloud TTS & MP3 Streaming (minimp3 trên RAM) ---
+    // --- Free Cloud TTS & Media Streaming (minimp3 + esp_jpeg trên RAM) ---
     esp_err_t speak_vietnamese(const std::string& text);
     esp_err_t stream_mp3_url(const char* url, uint32_t max_duration_ms = 0);
+    esp_err_t stream_mjpeg_video_url(const std::string& url,
+                                     const std::string& title,
+                                     const std::string& source_tag = "[Video]");
 
-    // Hàng đợi phát Radio sau khi Bot đọc xong lời đáp TTS
-    void schedule_radio_playback(const char* url, const char* station_name);
-    bool consume_pending_radio(std::string& out_url, std::string& out_name);
-    void clear_pending_radio();
+    // Hàng đợi phát Nhạc / Radio / Video ngay sau khi Bot nói xong lời xác nhận TTS
+    void schedule_media_playback(MediaKind kind,
+                                 const char* url,
+                                 const char* source_tag,
+                                 const char* title);
+    bool consume_pending_media(PendingMedia& out_media);
+    void clear_pending_media();
+
+    // Alias tương thích cho Radio
+    void schedule_radio_playback(const char* url, const char* station_name) {
+        schedule_media_playback(MediaKind::AUDIO_MP3, url, "[Radio]", station_name);
+    }
+    bool consume_pending_radio(std::string& out_url, std::string& out_name) {
+        PendingMedia m;
+        if (!consume_pending_media(m) || m.kind != MediaKind::AUDIO_MP3) return false;
+        out_url  = m.url;
+        out_name = m.title;
+        return true;
+    }
+    void clear_pending_radio() { clear_pending_media(); }
 
 private:
     ZClawLlmClient() = default;
@@ -86,8 +120,7 @@ private:
 
     ZClawConfig           config_ = {};
     std::vector<ChatMsg>  history_;
-    std::string           pending_radio_url_;
-    std::string           pending_radio_name_;
+    PendingMedia          pending_media_ = {};
 
     mutable SemaphoreHandle_t state_mutex_ = nullptr;
     std::atomic<bool>         initialized_{false};
@@ -117,4 +150,3 @@ private:
 };
 
 } // namespace zclaw
-

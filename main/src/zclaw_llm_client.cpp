@@ -23,6 +23,7 @@
 #include "esp_wifi.h"
 #include "freertos/event_groups.h"
 #include "freertos/stream_buffer.h"
+#include "jpeg_decoder.h"
 #include "lwip/sockets.h"
 #include "nvs.h"
 
@@ -53,7 +54,7 @@ constexpr const char* kSystemPromptVi =
     "1. Luôn mở đầu MỌI câu trả lời cuối cùng bằng đúng 1 thẻ cảm xúc trong danh sách sau: "
     "[binh_thuong], [vui_ve], [ngac_nhien], [suy_nghi], [buon], [ngu_gat].\n"
     "2. Trả lời tự nhiên như đang trò chuyện bằng giọng nói (tránh dùng ký hiệu markdown **, #, dấu gạch đầu dòng phức tạp).\n"
-    "3. Luôn ưu tiên gọi các công cụ MCP tiếng Việt khi người dùng hỏi thời tiết, giờ/âm lịch, tin tức, Wikipedia, nhạc/radio, mở video, suy luận sâu, điều khiển thiết bị, gửi ESP-NOW hoặc hẹn giờ Pomodoro.\n"
+    "3. Luôn ưu tiên gọi các công cụ MCP tiếng Việt khi người dùng hỏi thời tiết, giờ/âm lịch, tin tức, Wikipedia, phát nhạc YouTube/SoundCloud/Radio (phat_nhac_truc_tuyen), xem video trực tiếp lên màn hình (xem_video_truc_tuyen), suy luận sâu, điều khiển thiết bị, gửi ESP-NOW hoặc hẹn giờ Pomodoro.\n"
     "4. Giữ câu trả lời súc tích khoảng 2-4 câu trừ khi người dùng yêu cầu phân tích chi tiết.";
 
 // URL encode helper
@@ -328,6 +329,8 @@ void ZClawLlmClient::load_config() {
         read_str("llm_url",   cfg.llm_base_url, sizeof(cfg.llm_base_url));
         read_str("llm_model", cfg.llm_model, sizeof(cfg.llm_model));
         read_str("tts_voice", cfg.tts_voice, sizeof(cfg.tts_voice));
+        read_str("media_proxy", cfg.media_proxy_url, sizeof(cfg.media_proxy_url));
+        read_str("sc_cid",      cfg.soundcloud_client_id, sizeof(cfg.soundcloud_client_id));
         uint8_t g_pref = 0;
         if (nvs_get_u8(h, "tts_gg", &g_pref) == ESP_OK) {
             cfg.tts_prefer_google = (g_pref != 0);
@@ -359,10 +362,12 @@ esp_err_t ZClawLlmClient::save_config(const ZClawConfig& cfg) {
     nvs_set_str(h, "wifi_pass", cfg.wifi_pass);
     nvs_set_str(h, "stt_key",   cfg.stt_api_key);
     nvs_set_str(h, "llm_key",   cfg.llm_api_key);
-    nvs_set_str(h, "llm_url",   cfg.llm_base_url);
-    nvs_set_str(h, "llm_model", cfg.llm_model);
-    nvs_set_str(h, "tts_voice", cfg.tts_voice);
-    nvs_set_u8(h,  "tts_gg",    cfg.tts_prefer_google ? 1 : 0);
+    nvs_set_str(h, "llm_url",     cfg.llm_base_url);
+    nvs_set_str(h, "llm_model",   cfg.llm_model);
+    nvs_set_str(h, "tts_voice",   cfg.tts_voice);
+    nvs_set_str(h, "media_proxy", cfg.media_proxy_url);
+    nvs_set_str(h, "sc_cid",      cfg.soundcloud_client_id);
+    nvs_set_u8(h,  "tts_gg",      cfg.tts_prefer_google ? 1 : 0);
     err = nvs_commit(h);
     nvs_close(h);
 
@@ -573,6 +578,10 @@ esp_err_t ZClawLlmClient::http_root_get_handler(httpd_req_t* req) {
         html += ">" + std::to_string(d) + "°</option>";
     }
     html += "</select></div></div>"
+            "<label>Máy chủ Stream Nhạc/Video (YouTube/SoundCloud/MJPEG Proxy URL)</label>"
+            "<input name='media_proxy' maxlength='191' value='" + html_escape(cfg.media_proxy_url) + "' placeholder='VD: http://192.168.1.50:8080 (tùy chọn cho YouTube/MJPEG)'>"
+            "<label>SoundCloud Client ID (Tùy chọn)</label>"
+            "<input name='sc_cid' maxlength='63' value='" + html_escape(cfg.soundcloud_client_id) + "' placeholder='Để trống nếu dùng mặc định / tự động dò'>"
             "<label style='display:flex;align-items:center;gap:8px;margin-top:12px'>"
             "<input type='checkbox' name='reboot' value='1' checked style='width:auto'> Lưu xong tự khởi động lại kết nối Wi-Fi</label>"
             "<button class='btn' type='submit'>LƯU CẤU HÌNH</button></form></div>"
@@ -629,6 +638,10 @@ esp_err_t ZClawLlmClient::http_save_post_handler(httpd_req_t* req) {
                 snprintf(cfg.llm_model, sizeof(cfg.llm_model), "%s", val.c_str());
             } else if (key == "voice" && !val.empty()) {
                 snprintf(cfg.tts_voice, sizeof(cfg.tts_voice), "%s", val.c_str());
+            } else if (key == "media_proxy") {
+                snprintf(cfg.media_proxy_url, sizeof(cfg.media_proxy_url), "%s", val.c_str());
+            } else if (key == "sc_cid") {
+                snprintf(cfg.soundcloud_client_id, sizeof(cfg.soundcloud_client_id), "%s", val.c_str());
             } else if (key == "tts_gg") {
                 cfg.tts_prefer_google = (atoi(val.c_str()) != 0);
             } else if (key == "vol") {
@@ -1556,28 +1569,311 @@ esp_err_t ZClawLlmClient::speak_vietnamese(const std::string& text) {
 }
 
 // ---------------------------------------------------------------------------
-// Pending Radio Playback Helpers
+// Real-time MJPEG (+ Audio) Video Streamer -> ST7789 240x240 qua espressif/esp_jpeg
 // ---------------------------------------------------------------------------
-void ZClawLlmClient::schedule_radio_playback(const char* url, const char* station_name) {
-    if (!url) return;
+esp_err_t ZClawLlmClient::stream_mjpeg_video_url(const std::string& url,
+                                                 const std::string& title,
+                                                 const std::string& source_tag) {
+    if (url.empty()) return ESP_ERR_INVALID_ARG;
+
+    constexpr size_t kStreamBufSz = 32768; // 32KB đủ chứa 1 frame JPEG 240x240 + part header
+    uint8_t* rx_buf = static_cast<uint8_t*>(board_malloc_prefer_spiram(kStreamBufSz));
+    if (!rx_buf) {
+        ESP_LOGE(TAG, "Thiếu RAM cấp phát buffer nhận MJPEG");
+        return ESP_ERR_NO_MEM;
+    }
+
+    bool half_scale_only = false;
+    size_t rgb_buf_sz = static_cast<size_t>(LCD_WIDTH) * LCD_HEIGHT * sizeof(uint16_t);
+    uint8_t* rgb_buf = static_cast<uint8_t*>(board_malloc_prefer_spiram(rgb_buf_sz));
+    if (!rgb_buf) {
+        // Fallback chế độ 1/2 cho bo không PSRAM nếu SRAM thiếu cho khung 240x240 đầy đủ
+        half_scale_only = true;
+        rgb_buf_sz = static_cast<size_t>(LCD_WIDTH / 2) * (LCD_HEIGHT / 2) * sizeof(uint16_t);
+        rgb_buf = static_cast<uint8_t*>(board_malloc_prefer_spiram(rgb_buf_sz));
+    }
+    if (!rgb_buf) {
+        board_free(rx_buf);
+        ESP_LOGE(TAG, "Thiếu RAM cấp phát RGB565 framebuffer video");
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_http_client_config_t hcfg = {};
+    hcfg.url               = url.c_str();
+    hcfg.method            = HTTP_METHOD_GET;
+    hcfg.timeout_ms        = 12000;
+    hcfg.buffer_size       = 4096;
+    hcfg.buffer_size_tx    = 1024;
+    hcfg.user_agent        = "Mozilla/5.0 (ESP32-S3 ZClaw MJPEG/1.0)";
+    hcfg.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&hcfg);
+    if (!client) {
+        board_free(rgb_buf);
+        board_free(rx_buf);
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t err = ESP_OK;
+    int status    = 0;
+    for (int hop = 0; hop < 4; ++hop) {
+        err = esp_http_client_open(client, 0);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "MJPEG open lỗi: %s", esp_err_to_name(err));
+            esp_http_client_cleanup(client);
+            board_free(rgb_buf);
+            board_free(rx_buf);
+            return err;
+        }
+        if (esp_http_client_fetch_headers(client) < 0) {
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            board_free(rgb_buf);
+            board_free(rx_buf);
+            return ESP_FAIL;
+        }
+        status = esp_http_client_get_status_code(client);
+        if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+            esp_http_client_close(client);
+            if (esp_http_client_set_redirection(client) != ESP_OK) {
+                esp_http_client_cleanup(client);
+                board_free(rgb_buf);
+                board_free(rx_buf);
+                return ESP_FAIL;
+            }
+            continue;
+        }
+        break;
+    }
+
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "MJPEG HTTP status %d từ %s", status, url.c_str());
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        board_free(rgb_buf);
+        board_free(rx_buf);
+        return ESP_FAIL;
+    }
+
+    AudioHal::instance().clear_stop_playback();
+    if (UiEyesClock::instance().enter_video_mode(title.c_str(), source_tag.c_str()) != ESP_OK) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        board_free(rgb_buf);
+        board_free(rx_buf);
+        return ESP_FAIL;
+    }
+
+    // Cấp phát bộ giải mã âm thanh MP3 lười (chỉ alloc nếu luồng có part audio/mpeg đi kèm)
+    Mp3RamContext mp3_opt;
+    bool mp3_ready = false;
+
+    size_t rx_len         = 0;
+    bool   banner_hidden  = false;
+    bool   eof            = false;
+    const int64_t start_us = esp_timer_get_time();
+
+    auto find_seq = [](const uint8_t* hay, size_t hlen, const uint8_t* needle, size_t nlen, size_t from) -> int {
+        if (hlen < nlen || from > hlen - nlen) return -1;
+        for (size_t i = from; i <= hlen - nlen; ++i) {
+            if (memcmp(hay + i, needle, nlen) == 0) return static_cast<int>(i);
+        }
+        return -1;
+    };
+
+    auto decode_and_draw_jpeg = [&](const uint8_t* jdata, size_t jsize) {
+        esp_jpeg_image_scale_t scale = half_scale_only ? JPEG_IMAGE_SCALE_1 : JPEG_IMAGE_SCALE_0;
+        esp_jpeg_image_output_t outimg = {};
+        esp_err_t derr = ESP_FAIL;
+
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            esp_jpeg_image_cfg_t jcfg = {};
+            jcfg.indata                 = const_cast<uint8_t*>(jdata);
+            jcfg.indata_size            = static_cast<uint32_t>(jsize);
+            jcfg.outbuf                 = rgb_buf;
+            jcfg.outbuf_size            = static_cast<uint32_t>(rgb_buf_sz);
+            jcfg.out_format             = JPEG_IMAGE_FORMAT_RGB565;
+            jcfg.out_scale              = scale;
+            jcfg.flags.swap_color_bytes = 1; // Big-Endian RGB565 cho ST7789
+
+            derr = esp_jpeg_decode(&jcfg, &outimg);
+            if (derr == ESP_OK) break;
+            if (scale == JPEG_IMAGE_SCALE_0) {
+                scale = JPEG_IMAGE_SCALE_1; // Tự hạ xuống 1/2 nếu ảnh gốc lớn hơn buffer 240x240
+            } else {
+                break;
+            }
+        }
+
+        if (derr == ESP_OK && outimg.width > 0 && outimg.height > 0) {
+            const uint16_t dst_x = (outimg.width < LCD_WIDTH)
+                                       ? static_cast<uint16_t>((LCD_WIDTH - outimg.width) / 2)
+                                       : 0;
+            const uint16_t dst_y = (outimg.height < LCD_HEIGHT)
+                                       ? static_cast<uint16_t>((LCD_HEIGHT - outimg.height) / 2)
+                                       : 0;
+            UiEyesClock::instance().push_video_frame_rgb565(
+                dst_x, dst_y,
+                static_cast<uint16_t>(outimg.width),
+                static_cast<uint16_t>(outimg.height),
+                reinterpret_cast<const uint16_t*>(rgb_buf));
+        }
+    };
+
+    enum class PartType { UNKNOWN, JPEG, AUDIO_MP3 };
+    PartType cur_part_type = PartType::UNKNOWN;
+    size_t   cur_part_clen = 0;
+
+    while (!AudioHal::instance().is_playback_stop_requested()) {
+        // Ẩn thanh tiêu đề video sau 3 giây đầu tiên
+        if (!banner_hidden && (esp_timer_get_time() - start_us) >= 3000000LL) {
+            banner_hidden = true;
+            UiEyesClock::instance().hide_video_title_banner();
+        }
+
+        if (!eof && rx_len < kStreamBufSz) {
+            int r = esp_http_client_read(
+                client,
+                reinterpret_cast<char*>(rx_buf + rx_len),
+                static_cast<int>(kStreamBufSz - rx_len));
+            if (r < 0) {
+                err = ESP_FAIL;
+                break;
+            }
+            if (r == 0) {
+                eof = true;
+            } else {
+                rx_len += static_cast<size_t>(r);
+            }
+        }
+
+        // Xử lý part multipart header nếu gặp "--" đứng trước "\r\n\r\n" (chỉ parse khi là boundary text ASCII)
+        if (rx_len >= 4 && rx_buf[0] == '-' && rx_buf[1] == '-') {
+            static const uint8_t kHdrEnd[4] = {'\r', '\n', '\r', '\n'};
+            int hdr_end = find_seq(rx_buf, std::min<size_t>(rx_len, 512), kHdrEnd, 4, 2);
+            if (hdr_end > 0) {
+                std::string hdr(reinterpret_cast<const char*>(rx_buf), static_cast<size_t>(hdr_end));
+                cur_part_type = PartType::JPEG;
+                cur_part_clen = 0;
+                if (hdr.find("audio/mpeg") != std::string::npos ||
+                    hdr.find("audio/mp3") != std::string::npos) {
+                    cur_part_type = PartType::AUDIO_MP3;
+                }
+                size_t cl_pos = hdr.find("Content-Length:");
+                if (cl_pos == std::string::npos) cl_pos = hdr.find("content-length:");
+                if (cl_pos != std::string::npos) {
+                    cur_part_clen = static_cast<size_t>(strtoul(hdr.c_str() + cl_pos + 15, nullptr, 10));
+                }
+
+                const size_t drop = static_cast<size_t>(hdr_end) + 4U;
+                memmove(rx_buf, rx_buf + drop, rx_len - drop);
+                rx_len -= drop;
+
+                // Nếu biết chính xác Content-Length của part audio/mpeg -> giải mã ngay
+                if (cur_part_type == PartType::AUDIO_MP3 && cur_part_clen > 0 && cur_part_clen <= kStreamBufSz) {
+                    while (rx_len < cur_part_clen && !eof && !AudioHal::instance().is_playback_stop_requested()) {
+                        int r = esp_http_client_read(
+                            client,
+                            reinterpret_cast<char*>(rx_buf + rx_len),
+                            static_cast<int>(kStreamBufSz - rx_len));
+                        if (r <= 0) { eof = true; break; }
+                        rx_len += static_cast<size_t>(r);
+                    }
+                    if (rx_len >= cur_part_clen) {
+                        if (!mp3_ready) mp3_ready = mp3_opt.alloc();
+                        if (mp3_ready && mp3_opt.in_len + cur_part_clen <= Mp3RamContext::kInBufSize) {
+                            memcpy(mp3_opt.in_buf + mp3_opt.in_len, rx_buf, cur_part_clen);
+                            mp3_opt.in_len += cur_part_clen;
+                            mp3_opt.decode_and_play_available(false);
+                        }
+                        memmove(rx_buf, rx_buf + cur_part_clen, rx_len - cur_part_clen);
+                        rx_len -= cur_part_clen;
+                        cur_part_clen = 0;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Tìm marker JPEG SOI (0xFF 0xD8) .. EOI (0xFF 0xD9)
+        static const uint8_t kSoi[2] = {0xFF, 0xD8};
+        static const uint8_t kEoi[2] = {0xFF, 0xD9};
+        int soi = find_seq(rx_buf, rx_len, kSoi, 2, 0);
+        if (soi >= 0) {
+            if (soi > 0) {
+                memmove(rx_buf, rx_buf + soi, rx_len - static_cast<size_t>(soi));
+                rx_len -= static_cast<size_t>(soi);
+            }
+            if (cur_part_clen >= 2 && rx_len >= cur_part_clen) {
+                decode_and_draw_jpeg(rx_buf, cur_part_clen);
+                memmove(rx_buf, rx_buf + cur_part_clen, rx_len - cur_part_clen);
+                rx_len -= cur_part_clen;
+                cur_part_clen = 0;
+                continue;
+            }
+            int eoi = find_seq(rx_buf, rx_len, kEoi, 2, 2);
+            if (eoi > 0) {
+                const size_t frame_len = static_cast<size_t>(eoi) + 2U;
+                decode_and_draw_jpeg(rx_buf, frame_len);
+                memmove(rx_buf, rx_buf + frame_len, rx_len - frame_len);
+                rx_len -= frame_len;
+                cur_part_clen = 0;
+                continue;
+            }
+        } else if (rx_len > 1024 && cur_part_type != PartType::AUDIO_MP3) {
+            // Bỏ bớt byte rác đầu buffer nếu chưa thấy SOI (giữ 2 byte cuối phòng SOI vắt ngang chunk)
+            memmove(rx_buf, rx_buf + (rx_len - 2), 2);
+            rx_len = 2;
+        }
+
+        if (rx_len >= kStreamBufSz) {
+            // Buffer đầy quá 32KB cho 1 frame -> reset tìm frame tiếp theo tránh treo luồng
+            rx_len = 0;
+        }
+        if (eof && rx_len < 4) break;
+    }
+
+    if (mp3_ready) {
+        AudioHal::instance().flush_speaker_silence(30);
+    }
+
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    board_free(rgb_buf);
+    board_free(rx_buf);
+    UiEyesClock::instance().exit_video_mode();
+
+    return AudioHal::instance().is_playback_stop_requested() ? ESP_ERR_INVALID_STATE : ESP_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Pending Media Playback Helpers (Music / Radio / Video)
+// ---------------------------------------------------------------------------
+void ZClawLlmClient::schedule_media_playback(MediaKind kind,
+                                             const char* url,
+                                             const char* source_tag,
+                                             const char* title) {
+    if (!url || kind == MediaKind::NONE) return;
     if (state_mutex_ && xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        pending_radio_url_  = url;
-        pending_radio_name_ = station_name ? station_name : "Radio";
+        pending_media_.kind       = kind;
+        pending_media_.url        = url;
+        pending_media_.source_tag = source_tag ? source_tag : "";
+        pending_media_.title      = title ? title : "";
         xSemaphoreGive(state_mutex_);
     } else {
-        pending_radio_url_  = url;
-        pending_radio_name_ = station_name ? station_name : "Radio";
+        pending_media_.kind       = kind;
+        pending_media_.url        = url;
+        pending_media_.source_tag = source_tag ? source_tag : "";
+        pending_media_.title      = title ? title : "";
     }
 }
 
-bool ZClawLlmClient::consume_pending_radio(std::string& out_url, std::string& out_name) {
+bool ZClawLlmClient::consume_pending_media(PendingMedia& out_media) {
     bool has = false;
     if (state_mutex_ && xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        if (!pending_radio_url_.empty()) {
-            out_url  = pending_radio_url_;
-            out_name = pending_radio_name_;
-            pending_radio_url_.clear();
-            pending_radio_name_.clear();
+        if (pending_media_.kind != MediaKind::NONE && !pending_media_.url.empty()) {
+            out_media = pending_media_;
+            pending_media_ = {};
             has = true;
         }
         xSemaphoreGive(state_mutex_);
@@ -1585,10 +1881,9 @@ bool ZClawLlmClient::consume_pending_radio(std::string& out_url, std::string& ou
     return has;
 }
 
-void ZClawLlmClient::clear_pending_radio() {
+void ZClawLlmClient::clear_pending_media() {
     if (state_mutex_ && xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        pending_radio_url_.clear();
-        pending_radio_name_.clear();
+        pending_media_ = {};
         xSemaphoreGive(state_mutex_);
     }
 }

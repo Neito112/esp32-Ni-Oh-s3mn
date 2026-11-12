@@ -250,9 +250,11 @@ void bot_fsm_task(void* /*arg*/) {
         if (xQueueReceive(g_fsm_queue, &cmd, pdMS_TO_TICKS(200)) == pdTRUE) {
             if (cmd == FsmCommand::RESET_SESSION) {
                 ZClawLlmClient::instance().clear_history();
-                ZClawLlmClient::instance().clear_pending_radio();
+                ZClawLlmClient::instance().clear_pending_media();
                 AudioHal::instance().clear_stop_capture();
                 AudioHal::instance().clear_stop_playback();
+                UiEyesClock::instance().exit_video_mode();
+                UiEyesClock::instance().hide_music_banner();
                 AudioHal::instance().play_chime(AudioHal::ChimeType::DONE);
                 UiEyesClock::instance().switch_to_chat_screen();
                 UiEyesClock::instance().set_emotion(EyeEmotion::BINH_THUONG);
@@ -337,14 +339,25 @@ void bot_fsm_task(void* /*arg*/) {
                 UiEyesClock::instance().set_emotion(reply_emotion);
                 ZClawLlmClient::instance().speak_vietnamese(reply_text);
 
-                // 5. Nếu MCP phat_nhac_radio đã lên lịch kênh -> phát streaming MP3
-                std::string radio_url, radio_name;
-                if (ZClawLlmClient::instance().consume_pending_radio(radio_url, radio_name) &&
+                // 5. Nếu MCP phat_nhac_truc_tuyen hoặc xem_video_truc_tuyen đã xếp lịch -> phát Media
+                PendingMedia media;
+                if (ZClawLlmClient::instance().consume_pending_media(media) &&
                     !AudioHal::instance().is_playback_stop_requested()) {
                     g_bot_state.store(BotState::PLAYING_RADIO);
-                    UiEyesClock::instance().set_emotion(EyeEmotion::VUI_VE);
-                    ESP_LOGI(TAG, "Bắt đầu phát Radio: %s", radio_name.c_str());
-                    ZClawLlmClient::instance().stream_mp3_url(radio_url.c_str(), 0);
+                    if (media.kind == MediaKind::VIDEO_MJPEG) {
+                        ESP_LOGI(TAG, "Bắt đầu phát Video ST7789: %s %s",
+                                 media.source_tag.c_str(), media.title.c_str());
+                        ZClawLlmClient::instance().stream_mjpeg_video_url(
+                            media.url, media.title, media.source_tag);
+                    } else if (media.kind == MediaKind::AUDIO_MP3) {
+                        ESP_LOGI(TAG, "Bắt đầu phát Nhạc/Radio: %s %s",
+                                 media.source_tag.c_str(), media.title.c_str());
+                        UiEyesClock::instance().set_emotion(EyeEmotion::VUI_VE);
+                        UiEyesClock::instance().show_music_banner(
+                            media.source_tag.c_str(), media.title.c_str());
+                        ZClawLlmClient::instance().stream_mp3_url(media.url.c_str(), 0);
+                        UiEyesClock::instance().hide_music_banner();
+                    }
                 }
 
                 // 6. Kết thúc lượt hội thoại -> về IDLE, bắt đầu đếm 5s sang Clock Dashboard
@@ -506,7 +519,7 @@ extern "C" void app_main(void) {
     zclaw::touch_activity();
 
     xTaskCreatePinnedToCore(zclaw::button_scanner_task, "btn_scan", 4096, nullptr, 6, nullptr, 0);
-    xTaskCreatePinnedToCore(zclaw::bot_fsm_task,        "zclaw_fsm", 10240, nullptr, 5, nullptr, 1);
+    xTaskCreatePinnedToCore(zclaw::bot_fsm_task,        "zclaw_fsm", 12288, nullptr, 5, nullptr, 1);
 
     ESP_LOGI(TAG, "Hệ thống đã sẵn sàng! Nhấn BTN_MAIN (GPIO %d) để trò chuyện.", BTN_MAIN_GPIO);
 }

@@ -69,6 +69,21 @@ public:
     void update_nav_info(const ChronosNavInfo& nav);
     void show_notification(const ChronosNotification& notif);
 
+    // Banner hiển thị tên bài hát & nguồn phát ([YouTube] / [SoundCloud] / [Radio]) cùng sóng âm
+    void show_music_banner(const char* source_tag, const char* title);
+    void hide_music_banner();
+
+    // Chế độ phát Video MJPEG trực tiếp ra ST7789 (tạm dừng LVGL để tối đa 12-15 FPS)
+    esp_err_t enter_video_mode(const char* title, const char* source_tag);
+    esp_err_t push_video_frame_rgb565(uint16_t x,
+                                      uint16_t y,
+                                      uint16_t w,
+                                      uint16_t h,
+                                      const uint16_t* pixels_rgb565_be);
+    void hide_video_title_banner();
+    void exit_video_mode();
+    bool is_video_mode_active() const { return video_mode_.load(); }
+
     void refresh_waveform();
 
     void switch_to_clock_screen();
@@ -85,7 +100,7 @@ private:
     UiEyesClock(const UiEyesClock&) = delete;
     UiEyesClock& operator=(const UiEyesClock&) = delete;
 
-    // --- Màn hình Chat (Mắt + Sóng âm) ---
+    // --- Màn hình Chat (Mắt + Nhạc Banner + Sóng âm) ---
     lv_obj_t* scr_chat_          = nullptr;
     lv_obj_t* eye_left_          = nullptr;
     lv_obj_t* eye_right_         = nullptr;
@@ -93,7 +108,14 @@ private:
     lv_obj_t* eyelid_bot_left_   = nullptr;
     lv_obj_t* eyelid_top_right_  = nullptr;
     lv_obj_t* eyelid_bot_right_  = nullptr;
+    lv_obj_t* music_banner_      = nullptr;
+    lv_obj_t* lbl_music_title_   = nullptr;
     lv_obj_t* wave_bars_[11]     = {};
+
+    // --- Màn hình Video tạm (hiện thanh tiêu đề 3s đầu) ---
+    lv_obj_t* scr_video_         = nullptr;
+    lv_obj_t* video_title_bar_   = nullptr;
+    lv_obj_t* lbl_video_title_   = nullptr;
 
     // --- Overlay chung (lv_layer_top) hiển thị trên cả 2 màn hình ---
     lv_obj_t* volume_osd_        = nullptr;
@@ -129,6 +151,10 @@ private:
     lv_color_t*               draw_buf1_    = nullptr;
     lv_color_t*               draw_buf2_    = nullptr;
 
+    // --- Video DMA helpers ---
+    SemaphoreHandle_t video_tx_done_sem_ = nullptr;
+    uint16_t*         video_dma_strip_   = nullptr;
+
     // --- FreeRTOS ---
     SemaphoreHandle_t lvgl_mutex_       = nullptr;
     TaskHandle_t      lvgl_task_handle_ = nullptr;
@@ -136,6 +162,8 @@ private:
     // --- Trạng thái ---
     std::atomic<EyeEmotion> current_emotion_{EyeEmotion::BINH_THUONG};
     std::atomic<bool>       clock_screen_active_{false};
+    std::atomic<bool>       video_mode_{false};
+    std::atomic<bool>       video_banner_visible_{false};
     std::atomic<uint8_t>    backlight_pct_{80};
     std::atomic<uint16_t>   rotation_deg_{0};
     std::atomic<bool>       initialized_{false};
@@ -164,8 +192,10 @@ private:
     esp_err_t init_ledc_backlight();
     esp_err_t init_lvgl();
     void      apply_backlight_hardware(uint8_t percent);
+    void      fill_rect_solid_dma(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color_be);
     void      build_chat_screen();
     void      build_clock_screen();
+    void      build_video_screen();
     void      build_overlays();
 
     // --- Animation helpers ---

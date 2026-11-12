@@ -263,6 +263,7 @@ esp_err_t UiEyesClock::init() {
     if (lvgl_lock(200)) {
         build_chat_screen();
         build_clock_screen();
+        build_video_screen();
         build_overlays();
 
         lv_disp_load_scr(scr_chat_);
@@ -282,6 +283,7 @@ esp_err_t UiEyesClock::init() {
 // ---------------------------------------------------------------------------
 void UiEyesClock::deinit() {
     if (!initialized_.load()) return;
+    exit_video_mode();
     initialized_.store(false);
     task_running_.store(false);
 
@@ -502,6 +504,59 @@ void UiEyesClock::build_chat_screen() {
         lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
         wave_bars_[i] = b;
     }
+
+    // Banner phát nhạc [YouTube] / [SoundCloud] / [Radio] nằm gọn giữa mắt và sóng âm
+    music_banner_ = lv_obj_create(scr_chat_);
+    lv_obj_set_size(music_banner_, 224, 26);
+    lv_obj_set_pos(music_banner_, 8, 136);
+    lv_obj_set_style_bg_color(music_banner_, lv_color_hex(0x0D1E2E), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(music_banner_, LV_OPA_90, LV_PART_MAIN);
+    lv_obj_set_style_radius(music_banner_, 8, LV_PART_MAIN);
+    lv_obj_set_style_border_color(music_banner_, lv_color_hex(COLOR_EYE), LV_PART_MAIN);
+    lv_obj_set_style_border_width(music_banner_, 1, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(music_banner_, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(music_banner_, 2, LV_PART_MAIN);
+    lv_obj_clear_flag(music_banner_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(music_banner_, LV_OBJ_FLAG_HIDDEN);
+
+    lbl_music_title_ = lv_label_create(music_banner_);
+    lv_label_set_text(lbl_music_title_, "");
+    lv_label_set_long_mode(lbl_music_title_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_width(lbl_music_title_, 210);
+    lv_obj_set_style_text_font(lbl_music_title_, VN_FONT_DEFAULT, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl_music_title_, lv_color_hex(COLOR_EYE_GRAD), LV_PART_MAIN);
+    lv_obj_align(lbl_music_title_, LV_ALIGN_CENTER, 0, 0);
+}
+
+// ---------------------------------------------------------------------------
+// build_video_screen() — Nền đen + thanh tiêu đề video 3 giây đầu tại Y=212..240
+// ---------------------------------------------------------------------------
+void UiEyesClock::build_video_screen() {
+    scr_video_ = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(scr_video_, lv_color_hex(COLOR_BLACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(scr_video_, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_clear_flag(scr_video_, LV_OBJ_FLAG_SCROLLABLE);
+
+    video_title_bar_ = lv_obj_create(scr_video_);
+    lv_obj_set_size(video_title_bar_, LCD_W, 28);
+    lv_obj_set_pos(video_title_bar_, 0, 212);
+    lv_obj_set_style_bg_color(video_title_bar_, lv_color_hex(0x0E1D2B), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(video_title_bar_, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(video_title_bar_, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_side(video_title_bar_, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
+    lv_obj_set_style_border_color(video_title_bar_, lv_color_hex(COLOR_EYE), LV_PART_MAIN);
+    lv_obj_set_style_border_width(video_title_bar_, 1, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(video_title_bar_, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(video_title_bar_, 4, LV_PART_MAIN);
+    lv_obj_clear_flag(video_title_bar_, LV_OBJ_FLAG_SCROLLABLE);
+
+    lbl_video_title_ = lv_label_create(video_title_bar_);
+    lv_label_set_text(lbl_video_title_, "Đang tải video...");
+    lv_label_set_long_mode(lbl_video_title_, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(lbl_video_title_, LCD_W - 12);
+    lv_obj_set_style_text_font(lbl_video_title_, VN_FONT_DEFAULT, LV_PART_MAIN);
+    lv_obj_set_style_text_color(lbl_video_title_, lv_color_hex(COLOR_WHITE), LV_PART_MAIN);
+    lv_obj_align(lbl_video_title_, LV_ALIGN_LEFT_MID, 0, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -711,20 +766,23 @@ void UiEyesClock::lvgl_task(void* arg) {
 
         if (xSemaphoreTake(self->lvgl_mutex_, pdMS_TO_TICKS(15)) == pdTRUE) {
             lv_tick_inc(elapsed);
-            lv_timer_handler();
 
-            if (!self->clock_screen_active_.load()) {
-                self->tick_blink_and_glance(now);
-                self->tick_waveform();
-            } else {
-                self->tick_clock_update(false);
+            if (!self->video_mode_.load(std::memory_order_acquire)) {
+                lv_timer_handler();
+
+                if (!self->clock_screen_active_.load()) {
+                    self->tick_blink_and_glance(now);
+                    self->tick_waveform();
+                } else {
+                    self->tick_clock_update(false);
+                }
+                self->tick_notif_dismiss(now);
+                self->tick_vol_osd_dismiss(now);
             }
-            self->tick_notif_dismiss(now);
-            self->tick_vol_osd_dismiss(now);
 
             xSemaphoreGive(self->lvgl_mutex_);
         }
-        vTaskDelay(pdMS_TO_TICKS(LVGL_TICK_MS));
+        vTaskDelay(pdMS_TO_TICKS(self->video_mode_.load(std::memory_order_relaxed) ? 20 : LVGL_TICK_MS));
     }
 
     self->lvgl_task_handle_ = nullptr;
@@ -738,6 +796,14 @@ bool UiEyesClock::lvgl_flush_ready_cb(esp_lcd_panel_io_handle_t /*panel_io*/,
                                        esp_lcd_panel_io_event_data_t* /*edata*/,
                                        void* user_ctx) {
     auto* self = static_cast<UiEyesClock*>(user_ctx);
+    if (self->video_mode_.load(std::memory_order_acquire)) {
+        if (self->video_tx_done_sem_) {
+            BaseType_t hp_woken = pdFALSE;
+            xSemaphoreGiveFromISR(self->video_tx_done_sem_, &hp_woken);
+            return (hp_woken == pdTRUE);
+        }
+        return false;
+    }
     lv_disp_flush_ready(&self->disp_drv_);
     return false;
 }
@@ -1293,9 +1359,173 @@ bool UiEyesClock::is_clock_screen_active() const {
 }
 
 void UiEyesClock::refresh_waveform() {
-    if (!initialized_.load() || !lvgl_lock(20)) return;
+    if (!initialized_.load() || video_mode_.load() || !lvgl_lock(20)) return;
     tick_waveform();
     lvgl_unlock();
+}
+
+// ---------------------------------------------------------------------------
+// Music Banner trên màn hình Mắt + Sóng âm
+// ---------------------------------------------------------------------------
+void UiEyesClock::show_music_banner(const char* source_tag, const char* title) {
+    if (!initialized_.load() || !music_banner_ || !lbl_music_title_ || !lvgl_lock(50)) return;
+
+    char buf[160];
+    if (source_tag && source_tag[0]) {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_AUDIO " %s %s",
+                 source_tag, (title && title[0]) ? title : "Đang phát nhạc");
+    } else {
+        snprintf(buf, sizeof(buf), LV_SYMBOL_AUDIO " %s",
+                 (title && title[0]) ? title : "Đang phát nhạc");
+    }
+    lv_label_set_text(lbl_music_title_, buf);
+    lv_obj_clear_flag(music_banner_, LV_OBJ_FLAG_HIDDEN);
+    lvgl_unlock();
+}
+
+void UiEyesClock::hide_music_banner() {
+    if (!initialized_.load() || !music_banner_ || !lvgl_lock(50)) return;
+    lv_obj_add_flag(music_banner_, LV_OBJ_FLAG_HIDDEN);
+    lvgl_unlock();
+}
+
+// ---------------------------------------------------------------------------
+// Chế độ Video MJPEG trực tiếp ra ST7789 (12-15 FPS qua DMA Strip)
+// ---------------------------------------------------------------------------
+void UiEyesClock::fill_rect_solid_dma(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color_be) {
+    if (!panel_handle_ || !video_dma_strip_ || !video_tx_done_sem_) return;
+    if (x >= LCD_W || y >= LCD_H || w == 0 || h == 0) return;
+
+    const uint16_t draw_w = std::min<uint16_t>(w, LCD_W - x);
+    const uint16_t draw_h = std::min<uint16_t>(h, LCD_H - y);
+    const size_t strip_pixels = static_cast<size_t>(draw_w) * LCD_DMA_LINES;
+    for (size_t i = 0; i < strip_pixels; ++i) {
+        video_dma_strip_[i] = color_be;
+    }
+
+    uint16_t cur_y = y;
+    while (cur_y < y + draw_h) {
+        const uint16_t chunk_h = std::min<uint16_t>(LCD_DMA_LINES, static_cast<uint16_t>(y + draw_h - cur_y));
+        xSemaphoreTake(video_tx_done_sem_, 0);
+        if (esp_lcd_panel_draw_bitmap(panel_handle_, x, cur_y, x + draw_w, cur_y + chunk_h, video_dma_strip_) == ESP_OK) {
+            xSemaphoreTake(video_tx_done_sem_, pdMS_TO_TICKS(100));
+        }
+        cur_y += chunk_h;
+    }
+}
+
+esp_err_t UiEyesClock::enter_video_mode(const char* title, const char* source_tag) {
+    if (!initialized_.load() || !panel_handle_) return ESP_ERR_INVALID_STATE;
+    if (video_mode_.load()) return ESP_OK;
+
+    if (!video_tx_done_sem_) {
+        video_tx_done_sem_ = xSemaphoreCreateBinary();
+        if (!video_tx_done_sem_) return ESP_ERR_NO_MEM;
+    }
+    if (!video_dma_strip_) {
+        video_dma_strip_ = static_cast<uint16_t*>(
+            board_malloc_dma(static_cast<size_t>(LCD_W) * LCD_DMA_LINES * sizeof(uint16_t)));
+        if (!video_dma_strip_) {
+            vSemaphoreDelete(video_tx_done_sem_);
+            video_tx_done_sem_ = nullptr;
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    if (!lvgl_lock(200)) return ESP_ERR_TIMEOUT;
+
+    // Ẩn popup/OSD tạm để khỏi đè lên khung hình video
+    if (notif_popup_) lv_obj_add_flag(notif_popup_, LV_OBJ_FLAG_HIDDEN);
+    if (volume_osd_)  lv_obj_add_flag(volume_osd_,  LV_OBJ_FLAG_HIDDEN);
+
+    char banner_txt[160];
+    snprintf(banner_txt, sizeof(banner_txt), "%s %s",
+             (source_tag && source_tag[0]) ? source_tag : "[Video]",
+             (title && title[0]) ? title : "Đang phát trực tuyến");
+    if (lbl_video_title_) {
+        lv_label_set_text(lbl_video_title_, banner_txt);
+    }
+
+    lv_disp_load_scr(scr_video_);
+    lv_obj_invalidate(scr_video_);
+    lv_refr_now(lvgl_disp_); // Vẽ đồng bộ nền đen + thanh tiêu đề 3 giây đầu trước khi khóa LVGL
+
+    video_banner_visible_.store(true);
+    video_mode_.store(true);
+    lvgl_unlock();
+
+    ESP_LOGI(TAG, "Đã vào chế độ phát Video ST7789: %s", banner_txt);
+    return ESP_OK;
+}
+
+esp_err_t UiEyesClock::push_video_frame_rgb565(uint16_t x,
+                                                uint16_t y,
+                                                uint16_t w,
+                                                uint16_t h,
+                                                const uint16_t* pixels_rgb565_be) {
+    if (!video_mode_.load() || !panel_handle_ || !pixels_rgb565_be ||
+        !video_dma_strip_ || !video_tx_done_sem_) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (x >= LCD_W || y >= LCD_H || w == 0 || h == 0) return ESP_ERR_INVALID_ARG;
+
+    const uint16_t max_y = video_banner_visible_.load() ? 212 : LCD_H;
+    if (y >= max_y) return ESP_OK;
+
+    const uint16_t draw_w = std::min<uint16_t>(w, LCD_W - x);
+    const uint16_t draw_h = std::min<uint16_t>(h, max_y - y);
+
+    // Chia nhỏ theo từng dải <= LCD_DMA_LINES (40 dòng) để tuân thủ SPI max_transfer_sz
+    // và copy qua DMA-capable Internal SRAM nên hỗ trợ an toàn cả khi frame gốc nằm trên PSRAM
+    uint16_t row = 0;
+    while (row < draw_h) {
+        const uint16_t strip_h = std::min<uint16_t>(LCD_DMA_LINES, static_cast<uint16_t>(draw_h - row));
+        for (uint16_t r = 0; r < strip_h; ++r) {
+            memcpy(video_dma_strip_ + static_cast<size_t>(r) * draw_w,
+                   pixels_rgb565_be + static_cast<size_t>(row + r) * w,
+                   static_cast<size_t>(draw_w) * sizeof(uint16_t));
+        }
+        xSemaphoreTake(video_tx_done_sem_, 0);
+        esp_err_t err = esp_lcd_panel_draw_bitmap(
+            panel_handle_, x, y + row, x + draw_w, y + row + strip_h, video_dma_strip_);
+        if (err != ESP_OK) return err;
+        xSemaphoreTake(video_tx_done_sem_, pdMS_TO_TICKS(100));
+        row += strip_h;
+    }
+    return ESP_OK;
+}
+
+void UiEyesClock::hide_video_title_banner() {
+    if (!video_mode_.load()) return;
+    if (video_banner_visible_.exchange(false)) {
+        fill_rect_solid_dma(0, 212, LCD_W, 28, 0x0000);
+    }
+}
+
+void UiEyesClock::exit_video_mode() {
+    if (!video_mode_.load()) return;
+
+    if (lvgl_lock(200)) {
+        video_mode_.store(false);
+        video_banner_visible_.store(false);
+
+        if (video_dma_strip_) {
+            board_free(video_dma_strip_);
+            video_dma_strip_ = nullptr;
+        }
+        if (video_tx_done_sem_) {
+            vSemaphoreDelete(video_tx_done_sem_);
+            video_tx_done_sem_ = nullptr;
+        }
+
+        clock_screen_active_.store(false);
+        lv_disp_load_scr(scr_chat_);
+        lv_obj_invalidate(scr_chat_);
+        lvgl_unlock();
+    } else {
+        video_mode_.store(false);
+    }
+    ESP_LOGI(TAG, "Đã thoát chế độ Video về màn hình Mắt Chatbot");
 }
 
 } // namespace zclaw

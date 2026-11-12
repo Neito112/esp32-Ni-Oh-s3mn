@@ -52,8 +52,8 @@ private:
     std::string tool_xem_thoi_gian_lich_am(cJSON* args);
     std::string tool_doc_tin_tuc(cJSON* args);
     std::string tool_tra_cuu_thong_tin(cJSON* args);
-    std::string tool_phat_nhac_radio(cJSON* args);
-    std::string tool_mo_video(cJSON* args);
+    std::string tool_phat_nhac_truc_tuyen(cJSON* args);
+    std::string tool_xem_video_truc_tuyen(cJSON* args);
     std::string tool_suy_luan_cao(cJSON* args);
     std::string tool_dieu_khien_thiet_bi(cJSON* args);
     std::string tool_gui_lenh_esp_now(cJSON* args);

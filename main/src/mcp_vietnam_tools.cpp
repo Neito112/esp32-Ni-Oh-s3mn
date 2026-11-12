@@ -637,21 +637,23 @@ cJSON* McpRegistry::build_tools_schema_json() const {
                  p, make_req({"tu_khoa"}));
     }
 
-    // 5. phat_nhac_radio
+    // 5. phat_nhac_truc_tuyen
     {
         cJSON* p = cJSON_CreateObject();
-        add_str_prop(p, "ten_bai_hat_hoac_kenh", "Tên kênh radio (vov1, vov2, vov3, vov giao thong, nhac) hoặc URL luồng MP3 trực tiếp");
-        add_tool("phat_nhac_radio",
-                 "Phát radio VOV trực tuyến hoặc luồng âm thanh MP3 qua loa của thiết bị",
-                 p, make_req({"ten_bai_hat_hoac_kenh"}));
+        add_str_prop(p, "tu_khoa_hoac_url", "Tên bài hát, tên ca sĩ, kênh Radio (vov1/vov2/vov3/vov giao thong) hoặc link YouTube/SoundCloud/MP3");
+        add_str_prop(p, "nen_tang", "Nền tảng phát: \"youtube\", \"soundcloud\", hoặc \"radio\"");
+        add_tool("phat_nhac_truc_tuyen",
+                 "Phát nhạc trực tuyến từ YouTube, SoundCloud hoặc Radio VOV trực tiếp ra loa thiết bị kèm sóng âm 11 dải",
+                 p, make_req({"tu_khoa_hoac_url", "nen_tang"}));
     }
 
-    // 6. mo_video
+    // 6. xem_video_truc_tuyen
     {
         cJSON* p = cJSON_CreateObject();
-        add_str_prop(p, "tu_khoa_hoac_url", "Từ khóa tìm video YouTube hoặc đường dẫn URL video");
-        add_tool("mo_video",
-                 "Gửi yêu cầu mở video sang điện thoại qua BLE Chronos hoặc thiết bị ESP-NOW và hiển thị tiêu đề lên màn hình",
+        add_str_prop(p, "tu_khoa_hoac_url", "Từ khóa tìm kiếm video YouTube hoặc đường dẫn URL luồng video MJPEG trực tiếp");
+        add_str_prop(p, "do_phan_giai", "Độ phân giải tối ưu cho màn ST7789: \"240x240\" hoặc \"240x180\" (mặc định \"240x240\")");
+        add_tool("xem_video_truc_tuyen",
+                 "Phát và hiển thị Video MJPEG trực tuyến (240x240 / 240x180, 12-15 FPS) ngay trên màn hình ST7789 của mạch",
                  p, make_req({"tu_khoa_hoac_url"}));
     }
 
@@ -721,10 +723,10 @@ std::string McpRegistry::execute_tool(const char* tool_name, const char* args_js
         result = tool_doc_tin_tuc(args);
     } else if (strcmp(tool_name, "tra_cuu_thong_tin") == 0) {
         result = tool_tra_cuu_thong_tin(args);
-    } else if (strcmp(tool_name, "phat_nhac_radio") == 0) {
-        result = tool_phat_nhac_radio(args);
-    } else if (strcmp(tool_name, "mo_video") == 0) {
-        result = tool_mo_video(args);
+    } else if (strcmp(tool_name, "phat_nhac_truc_tuyen") == 0 || strcmp(tool_name, "phat_nhac_radio") == 0) {
+        result = tool_phat_nhac_truc_tuyen(args);
+    } else if (strcmp(tool_name, "xem_video_truc_tuyen") == 0 || strcmp(tool_name, "mo_video") == 0) {
+        result = tool_xem_video_truc_tuyen(args);
     } else if (strcmp(tool_name, "suy_luan_cao") == 0) {
         result = tool_suy_luan_cao(args);
     } else if (strcmp(tool_name, "dieu_khien_thiet_bi") == 0) {
@@ -1097,120 +1099,455 @@ std::string McpRegistry::tool_tra_cuu_thong_tin(cJSON* args) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. phat_nhac_radio(ten_bai_hat_hoac_kenh)
+// Helpers cho YouTube (Piped API) & SoundCloud API v2
 // ---------------------------------------------------------------------------
-std::string McpRegistry::tool_phat_nhac_radio(cJSON* args) {
-    const cJSON* j_req = cJSON_GetObjectItem(args, "ten_bai_hat_hoac_kenh");
-    const char* raw = (cJSON_IsString(j_req) && j_req->valuestring) ? j_req->valuestring : "vov1";
+namespace {
 
-    struct RadioChannel {
-        const char* key;
-        const char* label;
-        const char* stream_url;
-    };
-    static constexpr RadioChannel kChannels[] = {
-        {"vov giao thong hcm", "VOV Giao thông TP.HCM", "http://media.kythuatvov.vn:7008/;stream/1"},
-        {"vov giao thong",     "VOV Giao thông Hà Nội", "http://media.kythuatvov.vn:7006/;stream/1"},
-        {"vov1",               "VOV1 Thời sự",          "http://media.kythuatvov.vn:7000/;stream/1"},
-        {"vov2",               "VOV2 Văn hóa Xã hội",   "http://media.kythuatvov.vn:7002/;stream/1"},
-        {"vov3",               "VOV3 Âm nhạc Giải trí", "http://media.kythuatvov.vn:7004/;stream/1"},
-        {"nhac",               "VOV3 Âm nhạc",          "http://media.kythuatvov.vn:7004/;stream/1"},
-    };
+std::string build_proxy_url(const char* base, const char* path, const char* query, const char* extra_qs = "") {
+    std::string b = base ? base : "";
+    while (!b.empty() && b.back() == '/') b.pop_back();
+    return b + path + "?q=" + url_encode(query, false) + extra_qs;
+}
 
-    std::string chosen_url;
-    std::string chosen_name;
+// Trích Video ID từ URL youtube.com/watch?v=..., youtu.be/..., youtube.com/shorts/...
+std::string extract_youtube_id(const char* url) {
+    if (!url) return "";
+    const char* v = strstr(url, "v=");
+    if (v) {
+        v += 2;
+        std::string id;
+        while (*v && *v != '&' && *v != '#') id.push_back(*v++);
+        return id;
+    }
+    const char* be = strstr(url, "youtu.be/");
+    if (be) {
+        be += 9;
+        std::string id;
+        while (*be && *be != '?' && *be != '&' && *be != '/') id.push_back(*be++);
+        return id;
+    }
+    const char* sh = strstr(url, "/shorts/");
+    if (sh) {
+        sh += 8;
+        std::string id;
+        while (*sh && *sh != '?' && *sh != '&' && *sh != '/') id.push_back(*sh++);
+        return id;
+    }
+    return "";
+}
 
-    if (strncasecmp(raw, "http://", 7) == 0 || strncasecmp(raw, "https://", 8) == 0) {
-        chosen_url  = raw;
-        chosen_name = "Luồng MP3 trực tuyến";
-    } else {
-        std::string folded = fold_vn_lower(raw);
-        for (const auto& ch : kChannels) {
-            if (folded.find(ch.key) != std::string::npos) {
-                chosen_url  = ch.stream_url;
-                chosen_name = ch.label;
-                break;
+// Tự dò SoundCloud public client_id nếu người dùng chưa cấu hình tay
+std::string fetch_soundcloud_client_id(const ZClawConfig& cfg) {
+    if (cfg.soundcloud_client_id[0] != '\0') {
+        return cfg.soundcloud_client_id;
+    }
+    std::string page;
+    int st = 0;
+    if (http_get_text("https://soundcloud.com", page, &st, 24576) != ESP_OK || st != 200) {
+        return "";
+    }
+    // Quét script URL dạng https://a-v2.sndcdn.com/assets/...js
+    size_t pos = 0;
+    int checked = 0;
+    while (checked < 4 && (pos = page.find("https://a-v2.sndcdn.com/assets/", pos)) != std::string::npos) {
+        size_t end_q = page.find('"', pos);
+        if (end_q == std::string::npos || end_q - pos > 160) break;
+        std::string js_url = page.substr(pos, end_q - pos);
+        pos = end_q;
+        checked++;
+        if (js_url.find(".js") == std::string::npos) continue;
+
+        std::string js;
+        int jst = 0;
+        if (http_get_text(js_url.c_str(), js, &jst, 32768) == ESP_OK && jst == 200) {
+            size_t cid_pos = js.find("client_id:\"");
+            if (cid_pos == std::string::npos) cid_pos = js.find("client_id=\"");
+            if (cid_pos != std::string::npos) {
+                cid_pos += 11;
+                size_t cid_end = js.find('"', cid_pos);
+                if (cid_end != std::string::npos && cid_end - cid_pos >= 16 && cid_end - cid_pos <= 48) {
+                    return js.substr(cid_pos, cid_end - cid_pos);
+                }
             }
         }
-        if (chosen_url.empty()) {
-            chosen_url  = kChannels[4].stream_url; // Mặc định VOV3
-            chosen_name = std::string("VOV3 Âm nhạc (theo yêu cầu: ") + raw + ")";
+    }
+    return "";
+}
+
+// Tìm track SoundCloud & lấy URL MP3 progressive
+bool resolve_soundcloud_mp3(const char* query_or_url,
+                            const std::string& client_id,
+                            std::string& out_mp3_url,
+                            std::string& out_title,
+                            std::string& out_artist,
+                            int& out_duration_sec) {
+    if (client_id.empty() || !query_or_url || !query_or_url[0]) return false;
+
+    std::string api_resp;
+    int status = 0;
+    cJSON* track = nullptr;
+    cJSON* root  = nullptr;
+
+    if (strstr(query_or_url, "soundcloud.com") != nullptr) {
+        std::string res_url = "https://api-v2.soundcloud.com/resolve?url=" +
+                              url_encode(query_or_url, false) + "&client_id=" + client_id;
+        if (http_get_text(res_url.c_str(), api_resp, &status, 24576) == ESP_OK && status == 200) {
+            root = cJSON_Parse(api_resp.c_str());
+            track = root;
+        }
+    } else {
+        std::string search_url = "https://api-v2.soundcloud.com/search/tracks?q=" +
+                                 url_encode(query_or_url, false) +
+                                 "&client_id=" + client_id + "&limit=5";
+        if (http_get_text(search_url.c_str(), api_resp, &status, 32768) == ESP_OK && status == 200) {
+            root = cJSON_Parse(api_resp.c_str());
+            if (root) {
+                cJSON* col = cJSON_GetObjectItemCaseSensitive(root, "collection");
+                if (cJSON_IsArray(col)) {
+                    const int n = cJSON_GetArraySize(col);
+                    for (int i = 0; i < n; ++i) {
+                        cJSON* item = cJSON_GetArrayItem(col, i);
+                        cJSON* media = cJSON_GetObjectItemCaseSensitive(item, "media");
+                        cJSON* trs   = media ? cJSON_GetObjectItemCaseSensitive(media, "transcodings") : nullptr;
+                        if (cJSON_IsArray(trs) && cJSON_GetArraySize(trs) > 0) {
+                            track = item;
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
-    // Xếp hàng phát ngay sau khi Bot nói xong câu xác nhận để tránh tranh I2S với TTS
-    ZClawLlmClient::instance().schedule_radio_playback(chosen_url.c_str(), chosen_name.c_str());
+    bool ok = false;
+    if (track) {
+        cJSON* jtitle = cJSON_GetObjectItemCaseSensitive(track, "title");
+        cJSON* juser  = cJSON_GetObjectItemCaseSensitive(track, "user");
+        cJSON* juname = juser ? cJSON_GetObjectItemCaseSensitive(juser, "username") : nullptr;
+        cJSON* jdur   = cJSON_GetObjectItemCaseSensitive(track, "duration");
+        if (cJSON_IsString(jtitle) && jtitle->valuestring) out_title = jtitle->valuestring;
+        if (cJSON_IsString(juname) && juname->valuestring) out_artist = juname->valuestring;
+        if (cJSON_IsNumber(jdur)) out_duration_sec = static_cast<int>(jdur->valuedouble / 1000.0);
+
+        cJSON* media = cJSON_GetObjectItemCaseSensitive(track, "media");
+        cJSON* trs   = media ? cJSON_GetObjectItemCaseSensitive(media, "transcodings") : nullptr;
+        if (cJSON_IsArray(trs)) {
+            const int cnt = cJSON_GetArraySize(trs);
+            for (int i = 0; i < cnt; ++i) {
+                cJSON* tc  = cJSON_GetArrayItem(trs, i);
+                cJSON* fmt = cJSON_GetObjectItemCaseSensitive(tc, "format");
+                cJSON* pro = fmt ? cJSON_GetObjectItemCaseSensitive(fmt, "protocol") : nullptr;
+                cJSON* mim = fmt ? cJSON_GetObjectItemCaseSensitive(fmt, "mime_type") : nullptr;
+                cJSON* tul = cJSON_GetObjectItemCaseSensitive(tc, "url");
+
+                const bool is_prog = (cJSON_IsString(pro) && pro->valuestring &&
+                                      strcmp(pro->valuestring, "progressive") == 0);
+                const bool is_mp3  = (cJSON_IsString(mim) && mim->valuestring &&
+                                      strstr(mim->valuestring, "mpeg") != nullptr);
+                if (is_prog && is_mp3 && cJSON_IsString(tul) && tul->valuestring) {
+                    std::string resolve_mp3 = std::string(tul->valuestring) + "?client_id=" + client_id;
+                    std::string mp3_json;
+                    int mstat = 0;
+                    if (http_get_text(resolve_mp3.c_str(), mp3_json, &mstat, 4096) == ESP_OK && mstat == 200) {
+                        cJSON* mj = cJSON_Parse(mp3_json.c_str());
+                        if (mj) {
+                            cJSON* jreal = cJSON_GetObjectItemCaseSensitive(mj, "url");
+                            if (cJSON_IsString(jreal) && jreal->valuestring && jreal->valuestring[0]) {
+                                out_mp3_url = jreal->valuestring;
+                                ok = true;
+                            }
+                            cJSON_Delete(mj);
+                        }
+                    }
+                    if (ok) break;
+                }
+            }
+        }
+    }
+
+    if (root) cJSON_Delete(root);
+    return ok;
+}
+
+// Truy vấn Piped API công cộng tìm metadata & audio stream YouTube
+bool resolve_youtube_piped(const char* query_or_url,
+                           std::string& out_title,
+                           int& out_duration_sec,
+                           std::string& out_mp3_url,
+                           std::string& out_video_id) {
+    static constexpr const char* kPipedHosts[] = {
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.tokhmi.xyz",
+        "https://pipedapi.adminforge.de",
+    };
+
+    out_video_id = extract_youtube_id(query_or_url);
+    for (const char* host : kPipedHosts) {
+        if (out_video_id.empty()) {
+            std::string surl = std::string(host) + "/search?q=" +
+                               url_encode(query_or_url, false) + "&filter=music_songs";
+            std::string resp;
+            int st = 0;
+            if (http_get_text(surl.c_str(), resp, &st, 20480) == ESP_OK && st == 200) {
+                cJSON* root = cJSON_Parse(resp.c_str());
+                if (root) {
+                    cJSON* items = cJSON_GetObjectItemCaseSensitive(root, "items");
+                    cJSON* item0 = cJSON_IsArray(items) ? cJSON_GetArrayItem(items, 0) : nullptr;
+                    if (item0) {
+                        cJSON* jurl   = cJSON_GetObjectItemCaseSensitive(item0, "url");
+                        cJSON* jtitle = cJSON_GetObjectItemCaseSensitive(item0, "title");
+                        cJSON* jdur   = cJSON_GetObjectItemCaseSensitive(item0, "duration");
+                        if (cJSON_IsString(jtitle) && jtitle->valuestring) out_title = jtitle->valuestring;
+                        if (cJSON_IsNumber(jdur)) out_duration_sec = jdur->valueint;
+                        if (cJSON_IsString(jurl) && jurl->valuestring) {
+                            out_video_id = extract_youtube_id(jurl->valuestring);
+                            if (out_video_id.empty() && strncmp(jurl->valuestring, "/watch?v=", 9) == 0) {
+                                out_video_id = jurl->valuestring + 9;
+                            }
+                        }
+                    }
+                    cJSON_Delete(root);
+                }
+            }
+        }
+
+        if (!out_video_id.empty()) {
+            std::string strm_url = std::string(host) + "/streams/" + out_video_id;
+            std::string resp;
+            int st = 0;
+            if (http_get_text(strm_url.c_str(), resp, &st, 32768) == ESP_OK && st == 200) {
+                cJSON* root = cJSON_Parse(resp.c_str());
+                if (root) {
+                    cJSON* jtitle = cJSON_GetObjectItemCaseSensitive(root, "title");
+                    cJSON* jdur   = cJSON_GetObjectItemCaseSensitive(root, "duration");
+                    if (out_title.empty() && cJSON_IsString(jtitle) && jtitle->valuestring) {
+                        out_title = jtitle->valuestring;
+                    }
+                    if (out_duration_sec == 0 && cJSON_IsNumber(jdur)) {
+                        out_duration_sec = jdur->valueint;
+                    }
+                    cJSON* a_arr = cJSON_GetObjectItemCaseSensitive(root, "audioStreams");
+                    if (cJSON_IsArray(a_arr)) {
+                        const int n = cJSON_GetArraySize(a_arr);
+                        for (int i = 0; i < n; ++i) {
+                            cJSON* s = cJSON_GetArrayItem(a_arr, i);
+                            cJSON* jmime = cJSON_GetObjectItemCaseSensitive(s, "mimeType");
+                            cJSON* jurl  = cJSON_GetObjectItemCaseSensitive(s, "url");
+                            if (cJSON_IsString(jmime) && jmime->valuestring &&
+                                strstr(jmime->valuestring, "audio/mpeg") != nullptr &&
+                                cJSON_IsString(jurl) && jurl->valuestring) {
+                                out_mp3_url = jurl->valuestring;
+                                break;
+                            }
+                        }
+                    }
+                    cJSON_Delete(root);
+                    return true;
+                }
+            }
+        }
+    }
+    return !out_title.empty() || !out_video_id.empty();
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// 5. phat_nhac_truc_tuyen(tu_khoa_hoac_url, nen_tang)
+// ---------------------------------------------------------------------------
+std::string McpRegistry::tool_phat_nhac_truc_tuyen(cJSON* args) {
+    const cJSON* j_req = cJSON_GetObjectItem(args, "tu_khoa_hoac_url");
+    if (!j_req) j_req = cJSON_GetObjectItem(args, "ten_bai_hat_hoac_kenh"); // tương thích ngược
+    const cJSON* j_plat = cJSON_GetObjectItem(args, "nen_tang");
+
+    const char* raw = (cJSON_IsString(j_req) && j_req->valuestring && j_req->valuestring[0])
+                          ? j_req->valuestring
+                          : "vov3";
+    std::string plat = fold_vn_lower(
+        (cJSON_IsString(j_plat) && j_plat->valuestring) ? j_plat->valuestring : "");
+
+    // Tự nhận diện nền tảng nếu LLM bỏ qua tham số nen_tang
+    std::string folded_q = fold_vn_lower(raw);
+    if (plat.empty()) {
+        if (strstr(raw, "soundcloud.com") != nullptr) {
+            plat = "soundcloud";
+        } else if (strstr(raw, "youtube.com") != nullptr || strstr(raw, "youtu.be") != nullptr) {
+            plat = "youtube";
+        } else if (folded_q.find("vov") != std::string::npos ||
+                   folded_q.find("radio") != std::string::npos ||
+                   folded_q.find("dai") != std::string::npos) {
+            plat = "radio";
+        } else {
+            plat = "youtube";
+        }
+    }
+
+    const ZClawConfig cfg = ZClawLlmClient::instance().get_config();
+    std::string chosen_url;
+    std::string chosen_title = raw;
+    std::string source_tag   = "[Radio]";
+    std::string artist;
+    int duration_sec = 0;
+
+    if (plat == "radio") {
+        source_tag = "[Radio]";
+        struct RadioChannel {
+            const char* key;
+            const char* label;
+            const char* stream_url;
+        };
+        static constexpr RadioChannel kChannels[] = {
+            {"vov giao thong hcm", "VOV Giao thông TP.HCM", "http://media.kythuatvov.vn:7008/;stream/1"},
+            {"vov giao thong",     "VOV Giao thông Hà Nội", "http://media.kythuatvov.vn:7006/;stream/1"},
+            {"vov1",               "VOV1 Thời sự",          "http://media.kythuatvov.vn:7000/;stream/1"},
+            {"vov2",               "VOV2 Văn hóa Xã hội",   "http://media.kythuatvov.vn:7002/;stream/1"},
+            {"vov3",               "VOV3 Âm nhạc Giải trí", "http://media.kythuatvov.vn:7004/;stream/1"},
+            {"nhac",               "VOV3 Âm nhạc",          "http://media.kythuatvov.vn:7004/;stream/1"},
+        };
+
+        if (strncasecmp(raw, "http://", 7) == 0 || strncasecmp(raw, "https://", 8) == 0) {
+            chosen_url   = raw;
+            chosen_title = "Luồng MP3 trực tuyến";
+        } else {
+            for (const auto& ch : kChannels) {
+                if (folded_q.find(ch.key) != std::string::npos) {
+                    chosen_url   = ch.stream_url;
+                    chosen_title = ch.label;
+                    break;
+                }
+            }
+            if (chosen_url.empty()) {
+                chosen_url   = kChannels[4].stream_url;
+                chosen_title = std::string("VOV3 Âm nhạc (") + raw + ")";
+            }
+        }
+    } else if (plat == "soundcloud") {
+        source_tag = "[SoundCloud]";
+        if ((strncasecmp(raw, "http://", 7) == 0 || strncasecmp(raw, "https://", 8) == 0) &&
+            strstr(raw, ".mp3") != nullptr) {
+            chosen_url = raw;
+        } else {
+            std::string cid = fetch_soundcloud_client_id(cfg);
+            resolve_soundcloud_mp3(raw, cid, chosen_url, chosen_title, artist, duration_sec);
+
+            if (chosen_url.empty() && cfg.media_proxy_url[0] != '\0') {
+                chosen_url = build_proxy_url(cfg.media_proxy_url, "/stream", raw, "&source=soundcloud");
+            }
+            if (chosen_url.empty()) {
+                return make_error_json(
+                    "Không tìm được luồng MP3 progressive từ SoundCloud. "
+                    "Vui lòng nhập SoundCloud Client ID hoặc Máy chủ Stream Proxy trong cổng cấu hình 192.168.4.1.");
+            }
+        }
+    } else {
+        // YouTube / YouTube Music
+        source_tag = "[YouTube]";
+        std::string video_id;
+        resolve_youtube_piped(raw, chosen_title, duration_sec, chosen_url, video_id);
+        if (chosen_title.empty()) chosen_title = raw;
+
+        if (cfg.media_proxy_url[0] != '\0') {
+            // Ưu tiên Media Proxy gateway trả luồng MP3 trực tiếp tương thích minimp3 100%
+            const char* query_for_proxy = !video_id.empty() ? video_id.c_str() : raw;
+            chosen_url = build_proxy_url(cfg.media_proxy_url, "/stream", query_for_proxy, "&source=youtube");
+        } else if (chosen_url.empty()) {
+            // Fallback sang SoundCloud progressive MP3 nếu YouTube Piped không có định dạng audio/mpeg
+            std::string cid = fetch_soundcloud_client_id(cfg);
+            std::string sc_url, sc_title, sc_artist;
+            int sc_dur = 0;
+            if (resolve_soundcloud_mp3(raw, cid, sc_url, sc_title, sc_artist, sc_dur)) {
+                chosen_url   = sc_url;
+                chosen_title = sc_title;
+                artist       = sc_artist;
+                duration_sec = sc_dur;
+                source_tag   = "[SoundCloud]";
+            } else {
+                return make_error_json(
+                    "YouTube không cung cấp luồng MP3 gốc cho minimp3 trên ESP32-S3. "
+                    "Hãy nhập Máy chủ Stream Nhạc/Video (yt-dlp/ffmpeg Proxy URL) tại http://192.168.4.1 để phát trực tiếp mọi bài YouTube.");
+            }
+        }
+    }
+
+    // Xếp hàng phát MP3 ngay sau khi Bot nói xong lời giới thiệu để tránh tranh bus I2S
+    ZClawLlmClient::instance().schedule_media_playback(
+        MediaKind::AUDIO_MP3, chosen_url.c_str(), source_tag.c_str(), chosen_title.c_str());
 
     ChronosNotification notif = {};
-    snprintf(notif.app_name, sizeof(notif.app_name), "Radio / Nhạc");
-    snprintf(notif.title, sizeof(notif.title), "%s", chosen_name.c_str());
-    snprintf(notif.body, sizeof(notif.body), "Nhấn nút chính để dừng phát");
+    snprintf(notif.app_name, sizeof(notif.app_name), "%s", source_tag.c_str());
+    snprintf(notif.title, sizeof(notif.title), "%s", chosen_title.c_str());
+    snprintf(notif.body, sizeof(notif.body), "Nhấn BTN_MAIN (GPIO 3) để dừng nhạc");
     notif.unread = true;
     UiEyesClock::instance().show_notification(notif);
 
     cJSON* out = cJSON_CreateObject();
     cJSON_AddBoolToObject(out, "ok", true);
-    cJSON_AddStringToObject(out, "kenh", chosen_name.c_str());
+    cJSON_AddStringToObject(out, "nguon", source_tag.c_str());
+    cJSON_AddStringToObject(out, "ten_bai_hat", chosen_title.c_str());
+    if (!artist.empty()) cJSON_AddStringToObject(out, "nghe_si", artist.c_str());
+    if (duration_sec > 0) cJSON_AddNumberToObject(out, "thoi_luong_giay", duration_sec);
     cJSON_AddStringToObject(out, "url", chosen_url.c_str());
-    cJSON_AddStringToObject(out, "ghi_chu", "Đã lên lịch phát luồng MP3 ngay sau khi bot trả lời. Nhấn nút chính để dừng.");
+    cJSON_AddStringToObject(out, "ghi_chu", "Đã lên lịch phát nhạc ra loa kèm sóng âm và biểu cảm vui vẻ. Nhấn nút chính để dừng.");
     return cjson_to_string_and_free(out);
 }
 
 // ---------------------------------------------------------------------------
-// 6. mo_video(tu_khoa_hoac_url)
+// 6. xem_video_truc_tuyen(tu_khoa_hoac_url, do_phan_giai)
 // ---------------------------------------------------------------------------
-std::string McpRegistry::tool_mo_video(cJSON* args) {
+std::string McpRegistry::tool_xem_video_truc_tuyen(cJSON* args) {
     const cJSON* j_val = cJSON_GetObjectItem(args, "tu_khoa_hoac_url");
     if (!cJSON_IsString(j_val) || !j_val->valuestring || !j_val->valuestring[0]) {
-        return make_error_json("Thiếu từ khóa hoặc URL video");
+        return make_error_json("Thiếu từ khóa tìm kiếm hoặc URL luồng video");
     }
+
+    const cJSON* j_res = cJSON_GetObjectItem(args, "do_phan_giai");
+    std::string res = (cJSON_IsString(j_res) && j_res->valuestring &&
+                       strcmp(j_res->valuestring, "240x180") == 0)
+                          ? "240x180"
+                          : "240x240";
 
     const char* raw = j_val->valuestring;
-    std::string target_url;
-    if (strncasecmp(raw, "http://", 7) == 0 || strncasecmp(raw, "https://", 8) == 0) {
-        target_url = raw;
+    const ZClawConfig cfg = ZClawLlmClient::instance().get_config();
+
+    std::string stream_url;
+    std::string display_title = raw;
+    std::string source_tag    = "[Video]";
+
+    const bool is_http = (strncasecmp(raw, "http://", 7) == 0 || strncasecmp(raw, "https://", 8) == 0);
+    const bool is_yt_url = is_http && (strstr(raw, "youtube.com") != nullptr || strstr(raw, "youtu.be") != nullptr);
+
+    if (is_http && !is_yt_url) {
+        // Đường dẫn luồng MJPEG / camera trực tiếp -> phát thẳng lên ST7789
+        stream_url = raw;
     } else {
-        target_url = "https://www.youtube.com/results?search_query=" + url_encode(raw, false);
+        if (cfg.media_proxy_url[0] == '\0') {
+            return make_error_json(
+                "Chưa cấu hình Máy chủ Stream Video (Media Proxy URL). "
+                "Vui lòng vào Web Portal 192.168.4.1 nhập server MJPEG Proxy (yt-dlp + ffmpeg 240x240) hoặc truyền trực tiếp URL luồng MJPEG.");
+        }
+
+        source_tag = "[YouTube]";
+        std::string piped_title, piped_mp3, piped_vid;
+        int piped_dur = 0;
+        resolve_youtube_piped(raw, piped_title, piped_dur, piped_mp3, piped_vid);
+        if (!piped_title.empty()) {
+            display_title = piped_title;
+        }
+
+        const char* q_arg = !piped_vid.empty() ? piped_vid.c_str() : raw;
+        std::string extra = "&source=youtube&res=" + res;
+        stream_url = build_proxy_url(cfg.media_proxy_url, "/video", q_arg, extra.c_str());
     }
 
-    // Hiển thị tiêu đề lên màn hình
-    ChronosNotification notif = {};
-    snprintf(notif.app_name, sizeof(notif.app_name), "Mở Video");
-    snprintf(notif.title, sizeof(notif.title), "%s", raw);
-    snprintf(notif.body, sizeof(notif.body), "%s", target_url.c_str());
-    notif.unread = true;
-    UiEyesClock::instance().show_notification(notif);
-
-    // Đẩy qua BLE Chronos (gói 0xD2 OPEN_URL) nếu điện thoại đang kết nối
-    bool sent_ble = false;
-    if (ChronosBleService::instance().is_connected()) {
-        std::string pkt;
-        pkt.reserve(5 + target_url.size());
-        const uint16_t plen = static_cast<uint16_t>(target_url.size() + 1);
-        const uint8_t hdr[5] = {
-            0xAB, 0x00,
-            static_cast<uint8_t>((plen >> 8) & 0xFF),
-            static_cast<uint8_t>(plen & 0xFF),
-            0xD2 // Custom ZClaw OPEN_URL command
-        };
-        pkt.assign(reinterpret_cast<const char*>(hdr), sizeof(hdr));
-        pkt.append(target_url);
-        sent_ble = (ChronosBleService::instance().send_response(
-                        reinterpret_cast<const uint8_t*>(pkt.data()), pkt.size()) == ESP_OK);
-    }
-
-    // Đồng thời gửi broadcast ESP-NOW tới các node ngoại vi
-    char now_msg[200];
-    snprintf(now_msg, sizeof(now_msg), "VIDEO:%s", target_url.c_str());
-    const bool sent_espnow =
-        (EspNowMeshManager::instance().is_initialized() &&
-         EspNowMeshManager::instance().broadcast(EspNowCmd::TEXT, now_msg) == ESP_OK);
+    ZClawLlmClient::instance().schedule_media_playback(
+        MediaKind::VIDEO_MJPEG, stream_url.c_str(), source_tag.c_str(), display_title.c_str());
 
     cJSON* out = cJSON_CreateObject();
     cJSON_AddBoolToObject(out, "ok", true);
-    cJSON_AddStringToObject(out, "url", target_url.c_str());
-    cJSON_AddBoolToObject(out, "da_gui_ble_chronos", sent_ble);
-    cJSON_AddBoolToObject(out, "da_gui_esp_now", sent_espnow);
+    cJSON_AddStringToObject(out, "tieu_de", display_title.c_str());
+    cJSON_AddStringToObject(out, "do_phan_giai", res.c_str());
+    cJSON_AddStringToObject(out, "url_mjpeg", stream_url.c_str());
+    cJSON_AddStringToObject(out, "ghi_chu", "Video MJPEG sẽ phát ngay trên màn hình ST7789 sau lời giới thiệu. Nhấn BTN_MAIN (GPIO 3) để thoát về mắt Chatbot.");
     return cjson_to_string_and_free(out);
 }
 
