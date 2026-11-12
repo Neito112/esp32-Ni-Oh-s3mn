@@ -1,0 +1,10 @@
+# Bảng phân vùng tối ưu cho ESP32-S3 SuperMini (4MB Flash = 0x400000 bytes)
+# Loại bỏ hoàn toàn OTA (ota_0, ota_1, otadata) để nhường ~3.25MB cho factory app
+# SubType 0x83 tương thích LittleFS trên mọi phiên bản ESP-IDF v5.0 -> v5.4+
+#
+# Name,   Type, SubType,  Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x6000,
+phy_init, data, phy,      0xF000,   0x1000,
+factory,  app,  factory,  0x10000,  0x340000,
+littlefs, data, 0x83,     0x350000, 0xB0000,
+
